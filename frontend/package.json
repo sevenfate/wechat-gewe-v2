@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test": "vitest run",
     "typecheck": "vue-tsc --noEmit",
     "build": "pnpm run typecheck && vite build",
     "preview": "vite preview"
@@ -17,8 +18,11 @@
   "devDependencies": {
     "@types/node": "^24.10.0",
     "@vitejs/plugin-vue": "^6.0.8",
+    "@vue/test-utils": "^2.5.0",
+    "happy-dom": "^20.11.15",
     "typescript": "^5.9.3",
     "vite": "^8.2.2",
+    "vitest": "^4.1.11",
     "vue-tsc": "^3.3.11"
   },
   "packageManager": "pnpm@11.19.0"

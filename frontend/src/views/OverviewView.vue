@@ -1,12 +1,9 @@
 <script setup lang="ts">
 import {
-  Activity,
-  BellRing,
   Bot,
-  CircleDollarSign,
-  CircleX,
-  Inbox,
-  MessagesSquare,
+  Cable,
+  Package,
+  ShieldCheck,
 } from "lucide-vue-next";
 import { computed } from "vue";
 
@@ -16,71 +13,50 @@ import ErrorState from "@/components/ErrorState.vue";
 import LoadingState from "@/components/LoadingState.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import { useAsyncResource } from "@/composables/useAsyncResource";
-import { formatCurrency, formatDateTime, formatInteger } from "@/utils/format";
+import { formatDateTime, formatInteger } from "@/utils/format";
 
 const { data, loading, error, reload } = useAsyncResource(managementApi.overview);
 
-const hasMetrics = computed(() => {
-  if (!data.value) return false;
+const metrics = computed(() => {
+  const overview = data.value;
+  if (!overview) return [];
   return [
-    data.value.online_accounts,
-    data.value.total_accounts,
-    data.value.messages_today,
-    data.value.queue_depth,
-    data.value.failures_today,
-    data.value.pending_approvals,
-    data.value.agent_cost_today?.amount,
-    data.value.active_alerts,
-  ].some((value) => value !== null && value !== undefined);
+    overview.visibility.connections
+      ? {
+          label: "活动连接",
+          value: `${formatInteger(overview.active_connections)} / ${formatInteger(overview.total_connections)}`,
+          icon: Cable,
+          tone: "green",
+        }
+      : null,
+    overview.visibility.accounts
+      ? {
+          label: "在线账号",
+          value: `${formatInteger(overview.online_accounts)} / ${formatInteger(overview.total_accounts)}`,
+          icon: Bot,
+          tone: "green",
+        }
+      : null,
+    overview.visibility.plugins
+      ? {
+          label: "插件",
+          value: formatInteger(overview.plugin_count),
+          icon: Package,
+          tone: "blue",
+        }
+      : null,
+    overview.visibility.rules
+      ? {
+          label: "权限规则",
+          value: formatInteger(overview.rule_count),
+          icon: ShieldCheck,
+          tone: "amber",
+        }
+      : null,
+  ].filter((metric): metric is NonNullable<typeof metric> => metric !== null);
 });
 
-const metrics = computed(() => [
-  {
-    label: "在线账号",
-    value:
-      data.value?.online_accounts === null || data.value?.online_accounts === undefined
-        ? "-"
-        : `${formatInteger(data.value.online_accounts)} / ${formatInteger(data.value.total_accounts)}`,
-    icon: Bot,
-    tone: "green",
-  },
-  {
-    label: "今日消息",
-    value: formatInteger(data.value?.messages_today),
-    icon: MessagesSquare,
-    tone: "blue",
-  },
-  {
-    label: "队列积压",
-    value: formatInteger(data.value?.queue_depth),
-    icon: Inbox,
-    tone: "amber",
-  },
-  {
-    label: "今日失败",
-    value: formatInteger(data.value?.failures_today),
-    icon: CircleX,
-    tone: "red",
-  },
-  {
-    label: "待审批",
-    value: formatInteger(data.value?.pending_approvals),
-    icon: Activity,
-    tone: "violet",
-  },
-  {
-    label: "Agent 成本",
-    value: formatCurrency(data.value?.agent_cost_today?.amount, data.value?.agent_cost_today?.currency),
-    icon: CircleDollarSign,
-    tone: "cyan",
-  },
-  {
-    label: "活动告警",
-    value: formatInteger(data.value?.active_alerts),
-    icon: BellRing,
-    tone: "orange",
-  },
-]);
+const isLimited = computed(() => Boolean(data.value && metrics.value.length < 4));
 </script>
 
 <template>
@@ -93,8 +69,20 @@ const metrics = computed(() => [
 
     <LoadingState v-if="loading && !data" />
     <ErrorState v-else-if="error" :error="error" @retry="reload" />
-    <EmptyState v-else-if="!hasMetrics" title="暂无概览数据" detail="管理 API 尚未返回运营指标" />
-    <section v-else class="metrics-grid" aria-label="运营指标">
+    <template v-else>
+      <section v-if="isLimited" class="notice-band notice-band--neutral" role="status">
+        <ShieldCheck :size="18" />
+        <span>已按当前后台权限展示可读指标，未授权的数据不会发起请求。</span>
+      </section>
+      <EmptyState
+        v-if="!metrics.length"
+        title="当前权限下没有可读的总览指标"
+        detail="你仍可通过左侧导航进入已授权的功能。"
+      >
+        <template #icon><ShieldCheck :size="23" /></template>
+      </EmptyState>
+    </template>
+    <section v-if="!error && metrics.length" class="metrics-grid" aria-label="运营指标">
       <article v-for="metric in metrics" :key="metric.label" class="metric-card">
         <span class="metric-icon" :class="`metric-icon--${metric.tone}`">
           <component :is="metric.icon" :size="19" stroke-width="1.8" />
@@ -106,7 +94,7 @@ const metrics = computed(() => [
       </article>
     </section>
 
-    <section class="content-section">
+    <section v-if="!error && metrics.length" class="content-section">
       <div class="section-heading">
         <div>
           <h3>需要关注</h3>

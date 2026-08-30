@@ -1,0 +1,122 @@
+.plugin-header-actions,
+.builtin-installer {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.builtin-installer .filter-select {
+  min-width: 190px;
+}
+
+.plugin-management-table {
+  min-width: 1080px;
+}
+
+.plugin-description {
+  display: block;
+  max-width: 360px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-deployment-list {
+  display: grid;
+  min-width: 300px;
+  gap: 7px;
+}
+
+.plugin-deployment-row {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  grid-template-columns: minmax(110px, 1fr) auto auto;
+}
+
+.plugin-deployment-name {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.plugin-deployment-name strong,
+.plugin-deployment-name small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-deployment-name strong {
+  font-size: 11px;
+}
+
+.plugin-deployment-name small {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.json-field textarea {
+  min-height: 100px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  line-height: 1.45;
+}
+
+.dialog-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dialog-grid .field-control--wide {
+  grid-column: 1 / -1;
+}
+
+.plugin-result-band {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  color: #27543a;
+  font-size: 11px;
+  background: var(--green-soft);
+  border: 1px solid #cce5d6;
+  border-radius: 5px;
+}
+
+.plugin-result-band code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 680px) {
+  .plugin-header-actions {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .builtin-installer .filter-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .builtin-installer {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .dialog-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dialog-grid .field-control--wide {
+    grid-column: auto;
+  }
+}

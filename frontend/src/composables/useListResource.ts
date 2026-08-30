@@ -1,4 +1,4 @@
-import { onMounted, ref, shallowRef } from "vue";
+import { onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
 
 import { ApiError } from "@/api/client";
 import type { ListResult } from "@/api/types";
@@ -9,15 +9,19 @@ export function useListResource<T>(loader: (search: string) => Promise<ListResul
   const loading = ref(false);
   const error = shallowRef<ApiError | null>(null);
   const search = ref("");
+  let loadEpoch = 0;
 
   async function reload() {
+    const requestEpoch = ++loadEpoch;
     loading.value = true;
     error.value = null;
     try {
       const result = await loader(search.value.trim());
+      if (requestEpoch !== loadEpoch) return;
       items.value = result.items;
       total.value = result.total;
     } catch (caught) {
+      if (requestEpoch !== loadEpoch) return;
       error.value =
         caught instanceof ApiError
           ? caught
@@ -25,7 +29,7 @@ export function useListResource<T>(loader: (search: string) => Promise<ListResul
       items.value = [];
       total.value = null;
     } finally {
-      loading.value = false;
+      if (requestEpoch === loadEpoch) loading.value = false;
     }
   }
 
@@ -36,6 +40,9 @@ export function useListResource<T>(loader: (search: string) => Promise<ListResul
   }
 
   onMounted(reload);
+  onBeforeUnmount(() => {
+    loadEpoch += 1;
+  });
 
   return { items, total, loading, error, search, reload, clearSearch };
 }
