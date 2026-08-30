@@ -1,0 +1,51 @@
+# Local secrets and deployment access notes
+.env
+.env.*
+!.env.example
+docs/京东云SSH连接说明.md
+docs/gewe-api/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest-*/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+backend/.venv/
+
+# Runtime data
+.data/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+
+# Logs
+*.log
+logs/
+
+# Frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+.playwright-cli/
+output/playwright/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,20 @@
+id = "builtin.echo"
+name = "Echo 诊断插件"
+version = "0.1.0"
+core_api = "1"
+entrypoint = "plugin:create_plugin"
+description = "用于验证插件进程、命令和只读 Tool 链路。"
+events = ["gewe.message.text"]
+capabilities = ["message.reply.text"]
+timeout_seconds = 5
+
+[[commands]]
+name = "echo"
+aliases = []
+description = "原样返回命令后的文字"
+
+[[tools]]
+name = "plugin.echo.text"
+description = "返回输入文字，用于诊断 Tool Bridge"
+effect_class = "READ_ONLY"
+input_schema = { type = "object" }

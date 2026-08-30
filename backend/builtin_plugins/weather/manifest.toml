@@ -1,0 +1,48 @@
+id = "builtin.weather"
+name = "天气查询"
+version = "0.1.0"
+core_api = "1"
+entrypoint = "plugin:create_plugin"
+description = "通过 Open-Meteo 查询城市当前天气，支持命令和只读 Tool。"
+events = []
+capabilities = ["message.reply.text", "network.http.get"]
+timeout_seconds = 12
+
+[[commands]]
+name = "weather"
+aliases = ["天气"]
+description = "查询城市当前天气，例如：/weather 北京"
+
+[[tools]]
+name = "plugin.weather.query"
+description = "查询指定城市的当前天气"
+effect_class = "READ_ONLY"
+
+[tools.input_schema]
+type = "object"
+additionalProperties = false
+required = ["city"]
+
+[tools.input_schema.properties.city]
+type = "string"
+minLength = 1
+maxLength = 80
+
+[config_schema]
+type = "object"
+additionalProperties = false
+
+[config_schema.properties.geocoding_base_url]
+type = "string"
+minLength = 1
+maxLength = 2048
+
+[config_schema.properties.forecast_base_url]
+type = "string"
+minLength = 1
+maxLength = 2048
+
+[config_schema.properties.timeout_seconds]
+type = "number"
+minimum = 0.2
+maximum = 10

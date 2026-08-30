@@ -1,0 +1,5 @@
+MAIBOT_CONNECTOR_PLUGIN_ID = "builtin.maibot-connector"
+MAIBOT_PLATFORM = "gewe"
+MAIBOT_API_KEY_PLACEHOLDER = "$MAIBOT_API_KEY"
+MAIBOT_FORWARD_CAPABILITY = "message.forward.external.maibot"
+MAIBOT_PROACTIVE_CAPABILITY = "message.send.proactive.maibot"

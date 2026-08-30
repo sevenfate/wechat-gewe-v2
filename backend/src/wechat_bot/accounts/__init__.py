@@ -1,0 +1,1 @@
+"""WeChat bot account lifecycle."""
