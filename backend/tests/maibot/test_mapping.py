@@ -123,6 +123,24 @@ def test_outbound_rejects_unsupported_media_and_ambiguous_target() -> None:
         )
 
 
+def test_outbound_accepts_maibot_group_target_with_bot_user_metadata() -> None:
+    intent = parse_outbound_text_envelope(
+        _outbound(
+            receiver={
+                "group_info": {"platform": "gewe", "group_id": "123@chatroom"},
+                "user_info": {"platform": "gewe", "user_id": "app-1"},
+            },
+            segments=[{"type": "text", "data": "群消息"}],
+            api_key="secret",
+        ),
+        expected_api_key="secret",
+        allow_group_with_user=True,
+    )
+
+    assert intent.target_wxid == "123@chatroom"
+    assert intent.target_kind == "GROUP"
+
+
 def test_materialize_api_key_does_not_mutate_persisted_envelope() -> None:
     envelope = _outbound(
         receiver={"user_info": {"platform": "gewe", "user_id": "wxid_contact"}},
@@ -143,13 +161,14 @@ def _outbound(
     *,
     receiver: dict[str, object],
     segments: list[dict[str, str]],
+    api_key: str = "secret",
 ) -> dict[str, object]:
     return {
         "ver": 1,
         "msg_id": "maibot-envelope-1",
         "type": "sys_std",
         "meta": {
-            "sender_user": "secret",
+            "sender_user": api_key,
             "platform": "gewe",
             "timestamp": 1_788_055_200.25,
         },
@@ -161,6 +180,6 @@ def _outbound(
                 "receiver_info": receiver,
             },
             "message_segment": {"type": "seglist", "data": segments},
-            "message_dim": {"api_key": "secret", "platform": "gewe"},
+            "message_dim": {"api_key": api_key, "platform": "gewe"},
         },
     }

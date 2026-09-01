@@ -121,6 +121,7 @@ def parse_outbound_text_envelope(
     envelope: Mapping[str, Any],
     *,
     expected_api_key: str | None = None,
+    allow_group_with_user: bool = False,
 ) -> MaiBotOutboundText:
     _require_standard_envelope(envelope)
     envelope_id = _required_string(envelope, "msg_id", 255)
@@ -131,7 +132,10 @@ def parse_outbound_text_envelope(
     business_message_id = _required_string(message_info, "message_id", MAX_MESSAGE_ID_LENGTH)
     timestamp = _required_number(message_info, "time")
     receiver = _required_mapping(message_info, "receiver_info")
-    target_wxid, target_kind = _receiver_target(receiver)
+    target_wxid, target_kind = _receiver_target(
+        receiver,
+        allow_group_with_user=allow_group_with_user,
+    )
     segment = _required_mapping(payload, "message_segment")
     text, reply_to = _text_and_reply(segment)
     message_dim = _required_mapping(payload, "message_dim")
@@ -203,11 +207,26 @@ def _require_standard_envelope(envelope: Mapping[str, Any]) -> None:
         raise MaiBotProtocolError("envelope platform is not gewe")
 
 
-def _receiver_target(receiver: Mapping[str, Any]) -> tuple[str, str]:
+def _receiver_target(
+    receiver: Mapping[str, Any],
+    *,
+    allow_group_with_user: bool = False,
+) -> tuple[str, str]:
     raw_group = receiver.get("group_info")
     raw_user = receiver.get("user_info")
     group = raw_group if isinstance(raw_group, Mapping) else None
     user = raw_user if isinstance(raw_user, Mapping) else None
+    if group is not None and user is not None and allow_group_with_user:
+        # MaiBot currently includes its own user identity alongside the group
+        # destination for group sends. The group remains the only delivery
+        # target; the user object is accepted as compatibility metadata.
+        if _required_string(user, "platform", 32) != MAIBOT_PLATFORM:
+            raise MaiBotProtocolError("receiver platform is not gewe")
+        _required_string(user, "user_id", 255)
+        group_target = group
+        if _required_string(group_target, "platform", 32) != MAIBOT_PLATFORM:
+            raise MaiBotProtocolError("receiver platform is not gewe")
+        return _required_string(group_target, "group_id", 255), "GROUP"
     if (group is None) == (user is None):
         raise MaiBotProtocolError("receiver_info must contain exactly one target")
     target = group if group is not None else user

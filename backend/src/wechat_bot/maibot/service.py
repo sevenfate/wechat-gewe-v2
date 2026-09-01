@@ -488,6 +488,7 @@ class MaiBotBridgeService:
             intent = parse_outbound_text_envelope(
                 envelope,
                 expected_api_key=config.api_key.get_secret_value(),
+                allow_group_with_user=True,
             )
         except MaiBotProtocolError:
             self._reject(row, "MAIBOT_INVALID_ENVELOPE")

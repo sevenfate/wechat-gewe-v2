@@ -771,6 +771,7 @@ async def test_proactive_message_uses_connector_principal_and_capability_acl(
                 reply_to=None,
                 text="大家晚上好",
                 connector_context_id=_connector_context_from(source),
+                include_bot_user=True,
             ),
         )
         outbox = await session.scalar(
@@ -1373,6 +1374,7 @@ def _outbound(
     text: str,
     connector_context_id: str = "invalid-test-context",
     target_kind: str = "GROUP",
+    include_bot_user: bool = False,
 ) -> dict[str, Any]:
     segments: list[dict[str, str]] = []
     if reply_to is not None:
@@ -1383,6 +1385,8 @@ def _outbound(
         if target_kind == "GROUP"
         else {"user_info": {"platform": "gewe", "user_id": target_wxid}}
     )
+    if include_bot_user:
+        receiver_info["user_info"] = {"platform": "gewe", "user_id": "app-maibot"}
     return {
         "ver": 1,
         "msg_id": envelope_id,
