@@ -7,6 +7,7 @@ from uuid import UUID
 
 from fastapi import FastAPI
 from sqlalchemy import func, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid6 import uuid7
 
@@ -88,6 +89,27 @@ class FailingInvoker:
     ) -> tuple[int, Any]:
         del deployment_id, method, params
         raise RuntimeError("temporary plugin outage")
+
+
+class MembershipLockSession:
+    def __init__(self, chatroom_id: UUID) -> None:
+        self.chatroom_id = chatroom_id
+        self.scalar_statements: list[object] = []
+        self.added: list[object] = []
+        self.flush_count = 0
+
+    async def scalar(self, statement: object) -> object | None:
+        self.scalar_statements.append(statement)
+        # Parent lock succeeds; no active row and no historical epoch exist.
+        if len(self.scalar_statements) == 1:
+            return self.chatroom_id
+        return None
+
+    def add(self, instance: object) -> None:
+        self.added.append(instance)
+
+    async def flush(self) -> None:
+        self.flush_count += 1
 
 
 @dataclass(slots=True)
@@ -190,6 +212,24 @@ async def test_authorized_command_dispatches_plugin_and_locks_reply_target(
     assert authorization.resource_type is AclResourceType.COMMAND
     assert authorization.resource_id == command_resource_id("builtin.echo", "echo")
     assert authorization.parent_plugin_id == "builtin.echo"
+
+
+async def test_membership_creation_locks_chatroom_and_active_lookup() -> None:
+    chatroom_id = uuid7()
+    session = MembershipLockSession(chatroom_id)
+
+    membership = await EventDispatcher._ensure_membership(session, chatroom_id, "wxid_member")
+
+    assert membership.chatroom_id == chatroom_id
+    assert membership.membership_epoch == 1
+    assert len(session.added) == 1
+    assert session.flush_count == 1
+    compiled = [
+        str(statement.compile(dialect=postgresql.dialect()))
+        for statement in session.scalar_statements
+    ]
+    assert "FOR UPDATE" in compiled[0]
+    assert "FOR UPDATE" in compiled[1]
 
 
 async def test_default_deny_never_invokes_plugin(

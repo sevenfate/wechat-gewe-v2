@@ -12,6 +12,7 @@ from uuid6 import uuid7
 from wechat_bot.core.logging import get_logger
 from wechat_bot.db.base import utc_now
 from wechat_bot.db.maibot_models import MaiBotConnectionStatus
+from wechat_bot.db.tool_models import ToolCallStatus
 from wechat_bot.maibot.constants import MAIBOT_CONNECTOR_PLUGIN_ID
 from wechat_bot.maibot.mapping import (
     MaiBotProtocolError,
@@ -26,6 +27,14 @@ from wechat_bot.maibot.schemas import (
 from wechat_bot.maibot.service import MaiBotBridgeService
 from wechat_bot.maibot.transport import MaiBotWebSocket, open_maibot_socket
 from wechat_bot.plugins.supervisor import PluginLaunchSpec, PluginRuntimeError
+from wechat_bot.tool_bridge.protocol import (
+    TOOL_CALL_FRAME_TYPES,
+    TOOL_CATALOG_FRAME_TYPES,
+    MaiBotToolBridgeAdapter,
+    build_tool_catalog_envelope,
+    build_tool_result_envelope,
+)
+from wechat_bot.tool_bridge.service import ToolBrokerService
 
 SocketFactory = Callable[
     [MaiBotConnectorConfig],
@@ -48,6 +57,7 @@ class MaiBotConnectionWorker:
         socket_factory: SocketFactory = open_maibot_socket,
         expected_activation_id: UUID | None = None,
         expected_fencing_token: str | None = None,
+        tool_adapter: MaiBotToolBridgeAdapter | None = None,
         activation_visibility_timeout_seconds: float = (ACTIVATION_VISIBILITY_TIMEOUT_SECONDS),
     ) -> None:
         self.deployment_id = deployment_id
@@ -58,6 +68,7 @@ class MaiBotConnectionWorker:
         self._socket_factory = socket_factory
         self._expected_activation_id = expected_activation_id
         self._expected_fencing_token = expected_fencing_token
+        self._tool_adapter = tool_adapter
         self._activation_visibility_timeout_seconds = activation_visibility_timeout_seconds
         self._stop_requested = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -207,6 +218,56 @@ class MaiBotConnectionWorker:
                 )
                 await session.commit()
             return
+        frame_type = decoded.get("type")
+        if frame_type in TOOL_CALL_FRAME_TYPES:
+            if self._tool_adapter is None:
+                result_envelope = build_tool_result_envelope(
+                    transport_id=_transport_id(decoded),
+                    tool_call_id=_transport_id(decoded),
+                    status=ToolCallStatus.DENIED,
+                    error_code="TOOL_BRIDGE_UNAVAILABLE",
+                )
+            else:
+                result_envelope = await self._tool_adapter.handle(context, decoded)
+            await asyncio.wait_for(
+                socket.send(
+                    json.dumps(
+                        result_envelope,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                ),
+                timeout=SOCKET_SEND_TIMEOUT_SECONDS,
+            )
+            return
+        if frame_type in TOOL_CATALOG_FRAME_TYPES:
+            if self._tool_adapter is None:
+                result_envelope = build_tool_catalog_envelope(
+                    transport_id=_transport_id(decoded),
+                    status=ToolCallStatus.DENIED,
+                    error_code="TOOL_BRIDGE_UNAVAILABLE",
+                )
+            else:
+                result_envelope = await self._tool_adapter.handle_catalog(context, decoded)
+            await asyncio.wait_for(
+                socket.send(
+                    json.dumps(
+                        result_envelope,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                ),
+                timeout=SOCKET_SEND_TIMEOUT_SECONDS,
+            )
+            return
+        if isinstance(frame_type, str) and frame_type.startswith("custom_"):
+            # MaiBot can carry unrelated custom messages on the same channel.
+            # They are not part of this connector contract and must not force a
+            # reconnect loop or be interpreted as a Tool request.
+            self._logger.debug("maibot_custom_frame_ignored", frame_type=frame_type)
+            return
         if decoded.get("type") != "sys_std":
             raise MaiBotProtocolError("unsupported MaiBot envelope type")
         async with self._session_factory() as session:
@@ -292,13 +353,23 @@ class MaiBotManagedRuntime:
         session_factory: async_sessionmaker[AsyncSession],
         service: MaiBotBridgeService,
         socket_factory: SocketFactory = open_maibot_socket,
+        tool_broker: ToolBrokerService | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._service = service
         self._socket_factory = socket_factory
+        self._tool_adapter = (
+            MaiBotToolBridgeAdapter(tool_broker, session_factory)
+            if tool_broker is not None
+            else None
+        )
         self._workers: dict[str, dict[str, MaiBotConnectionWorker]] = {}
         self._last_epoch: dict[str, int] = {}
         self._lock = asyncio.Lock()
+
+    def set_tool_broker(self, broker: ToolBrokerService) -> None:
+        """Attach the broker after PluginSupervisor construction resolves the cycle."""
+        self._tool_adapter = MaiBotToolBridgeAdapter(broker, self._session_factory)
 
     @staticmethod
     def handles(spec: PluginLaunchSpec) -> bool:
@@ -342,6 +413,7 @@ class MaiBotManagedRuntime:
                 socket_factory=self._socket_factory,
                 expected_activation_id=parsed_activation_id,
                 expected_fencing_token=fencing_token,
+                tool_adapter=self._tool_adapter,
             )
             await worker.start()
             workers[worker_key] = worker
@@ -359,3 +431,10 @@ class MaiBotManagedRuntime:
             deployment_ids = tuple(self._workers)
         for deployment_id in deployment_ids:
             await self.deactivate(deployment_id)
+
+
+def _transport_id(envelope: dict[str, object]) -> str:
+    raw = envelope.get("msg_id")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return "unknown"

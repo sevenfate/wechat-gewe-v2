@@ -9,6 +9,7 @@ MODEL_MODULES = (
     "wechat_bot.db.plugin_models",
     "wechat_bot.db.maibot_models",
     "wechat_bot.db.agent_models",
+    "wechat_bot.db.tool_models",
 )
 
 

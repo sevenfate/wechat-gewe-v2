@@ -25,6 +25,22 @@ def test_webhook_body_limit_must_be_positive() -> None:
         Settings(webhook_max_body_bytes=0)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("directory_contacts_cache_poll_attempts", -1),
+        ("directory_contacts_cache_poll_interval_seconds", 0),
+        ("directory_contacts_cache_poll_interval_seconds", float("nan")),
+    ],
+)
+def test_invalid_directory_cache_poll_settings_are_rejected(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings(**{field: value})
+
+
 def test_invalid_base_url_is_rejected() -> None:
     with pytest.raises(ValidationError, match=r"absolute HTTP\(S\) URL"):
         Settings(public_base_url="localhost:8000")

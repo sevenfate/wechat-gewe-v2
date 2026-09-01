@@ -58,3 +58,8 @@ maximum = 300
 
 [config_schema.properties.enable_proactive_messages]
 type = "boolean"
+
+[config_schema.properties.tool_allowlist]
+type = "array"
+maxItems = 100
+items = { type = "string", minLength = 1, maxLength = 160 }

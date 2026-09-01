@@ -30,7 +30,8 @@ def _sqlite_tables(database_path: Path) -> set[str]:
 def test_initial_migration_round_trip_matches_registered_metadata(tmp_path: Path) -> None:
     load_all_models()
     expected_tables = set(Base.metadata.tables)
-    assert len(expected_tables) == 38
+    assert len(expected_tables) == 39
+    assert "tool_call" in expected_tables
 
     database_path = tmp_path / "migration-round-trip.db"
     config = _migration_config(database_path)
@@ -138,6 +139,36 @@ def test_initial_migration_contains_security_critical_columns(tmp_path: Path) ->
             "question_id",
             "payload_sha256",
         },
+        "tool_call": {
+            "workspace_id",
+            "connector_deployment_id",
+            "connector_revision_id",
+            "connector_activation_id",
+            "target_deployment_id",
+            "target_revision_id",
+            "target_activation_epoch",
+            "external_tool_call_id",
+            "connector_context_digest",
+            "tool_name",
+            "tool_schema_version",
+            "invocation_mode",
+            "arguments",
+            "arguments_sha256",
+            "trace_id",
+            "actor_principal_id",
+            "bot_account_id",
+            "chatroom_id",
+            "contact_id",
+            "status",
+            "result",
+            "error_code",
+            "error_detail",
+            "deadline_at",
+            "available_at",
+            "attempt_count",
+            "started_at",
+            "finished_at",
+        },
     }
 
     with sqlite3.connect(database_path) as connection:
@@ -168,6 +199,10 @@ def test_initial_migration_renders_for_postgresql() -> None:
         'CREATE TABLE "plugin_event_dispatch"' in sql or "CREATE TABLE plugin_event_dispatch" in sql
     )
     assert "provider_message_id VARCHAR(255)" in sql
+    assert 'CREATE TABLE "tool_call"' in sql or "CREATE TABLE tool_call" in sql
+    assert "uq_tool_call_connector_external_id" in sql
+    assert "ix_tool_call_status_available" in sql
+    assert "tool_invocation_mode" in sql
 
 
 def test_single_workspace_migration_fails_closed_for_legacy_multi_workspace(

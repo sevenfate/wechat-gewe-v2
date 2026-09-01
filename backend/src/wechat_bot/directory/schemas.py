@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+MAX_REPORTED_CHATROOM_DETAIL_FAILURES = 200
+
 
 class ContactView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -88,6 +90,13 @@ class DirectorySyncResult(BaseModel):
     bot_account_id: UUID
     observed_contacts: int
     observed_chatrooms: int
+    chatroom_detail_status: str = "COMPLETE"
+    chatroom_detail_failure_count: int = Field(default=0, ge=0)
+    chatroom_detail_failures: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_REPORTED_CHATROOM_DETAIL_FAILURES,
+    )
+    chatroom_detail_failures_truncated: bool = False
     synced_at: datetime
 
 

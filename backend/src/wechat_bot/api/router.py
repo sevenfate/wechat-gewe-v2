@@ -11,6 +11,7 @@ from wechat_bot.api.outbox import router as outbox_router
 from wechat_bot.api.plugins import router as plugins_router
 from wechat_bot.api.policy import router as policy_router
 from wechat_bot.api.task_agent import router as task_agent_router
+from wechat_bot.api.tool_bridge import router as tool_bridge_router
 from wechat_bot.api.webhooks import router as webhooks_router
 
 router = APIRouter()
@@ -26,3 +27,4 @@ router.include_router(outbox_router)
 router.include_router(policy_router)
 router.include_router(plugins_router)
 router.include_router(task_agent_router)
+router.include_router(tool_bridge_router)

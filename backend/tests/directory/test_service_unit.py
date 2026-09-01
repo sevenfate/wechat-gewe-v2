@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from cryptography.fernet import Fernet
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import wechat_bot.directory.service as directory_service_module
@@ -23,8 +24,13 @@ from wechat_bot.directory.service import (
     DISCOVERED_FROM_CONTACT_LIST,
     DirectoryService,
 )
+from wechat_bot.gewe.client import GeWeClientError
 from wechat_bot.gewe.schemas import (
     AppIdRequest,
+    BriefInfoItem,
+    BriefInfoRequest,
+    ChatroomInfoData,
+    ChatroomInfoRequest,
     ChatroomMember,
     ChatroomMemberListData,
     ChatroomMemberListRequest,
@@ -37,10 +43,16 @@ class FakeSession:
         self.scalar_rows = scalar_rows or []
         self.added: list[object] = []
         self.flush_count = 0
+        self.scalar_statements: list[object] = []
+        self.scalars_statements: list[object] = []
 
     async def scalars(self, statement: object) -> list[Any]:
-        del statement
+        self.scalars_statements.append(statement)
         return cast(list[Any], self.scalar_rows)
+
+    async def scalar(self, statement: object) -> Any:
+        self.scalar_statements.append(statement)
+        return self.scalar_rows[0] if self.scalar_rows else None
 
     def add(self, instance: object) -> None:
         self.added.append(instance)
@@ -83,6 +95,7 @@ async def test_sync_contacts_decrypts_token_and_builds_deduplicated_projection(
     connection = _connection(cipher, token)
     account = _account(connection)
     captured_tokens: list[str] = []
+    brief_batches: list[list[str]] = []
 
     class FakeGeWeClient:
         def __init__(self, *, base_url: str, token: str) -> None:
@@ -110,9 +123,42 @@ async def test_sync_contacts_decrypts_token_and_builds_deduplicated_projection(
                 }
             )
 
+        async def get_brief_info(self, request: BriefInfoRequest) -> list[BriefInfoItem]:
+            assert request.app_id == account.app_id
+            brief_batches.append(request.wxids)
+            return [
+                BriefInfoItem.model_validate(
+                    {
+                        "userName": "wxid_friend",
+                        "nickName": "好友",
+                        "remark": "好友备注",
+                        "smallHeadImgUrl": "https://example.test/friend.jpg",
+                    }
+                ),
+                BriefInfoItem.model_validate(
+                    {
+                        "userName": "100@chatroom",
+                        "nickName": "123",
+                    }
+                ),
+            ]
+
+        async def get_chatroom_info(self, request: ChatroomInfoRequest) -> ChatroomInfoData:
+            assert request.app_id == account.app_id
+            assert request.chatroom_id == "100@chatroom"
+            return ChatroomInfoData.model_validate(
+                {
+                    "chatroomId": request.chatroom_id,
+                    "nickName": "100",
+                    "chatRoomOwner": "wxid_owner",
+                    "memberList": [{"wxid": "member-1"}],
+                }
+            )
+
     class Harness(DirectoryService):
         contact_types: dict[str, str] | None = None
         chatroom_ids: list[str] | None = None
+        brief_info_by_wxid: dict[str, BriefInfoItem] | None = None
 
         async def _account_connection(
             self,
@@ -129,11 +175,13 @@ async def test_sync_contacts_decrypts_token_and_builds_deduplicated_projection(
             *,
             bot_account_id: UUID,
             contact_types: dict[str, str],
+            brief_info_by_wxid: dict[str, BriefInfoItem],
             synced_at: datetime,
         ) -> None:
             del session, synced_at
             assert bot_account_id == account.id
             self.contact_types = contact_types
+            self.brief_info_by_wxid = brief_info_by_wxid
 
         async def _upsert_chatroom_placeholders(
             self,
@@ -141,11 +189,15 @@ async def test_sync_contacts_decrypts_token_and_builds_deduplicated_projection(
             *,
             bot_account_id: UUID,
             chatroom_ids: list[str],
+            brief_info_by_wxid: dict[str, BriefInfoItem],
+            chatroom_details: dict[str, ChatroomInfoData],
             synced_at: datetime,
         ) -> None:
             del session, synced_at
             assert bot_account_id == account.id
             self.chatroom_ids = chatroom_ids
+            self.brief_info_by_wxid = brief_info_by_wxid
+            assert chatroom_details["100@chatroom"].nickname == "100"
 
     monkeypatch.setattr(directory_service_module, "GeWeClient", FakeGeWeClient)
     fake_session = FakeSession()
@@ -162,9 +214,111 @@ async def test_sync_contacts_decrypts_token_and_builds_deduplicated_projection(
         "gh_official": CONTACT_TYPE_OFFICIAL_ACCOUNT,
     }
     assert service.chatroom_ids == ["100@chatroom"]
+    assert brief_batches == [["wxid_friend", "100@chatroom"]]
+    assert service.brief_info_by_wxid is not None
+    assert service.brief_info_by_wxid["100@chatroom"].nickname == "123"
+    assert "gh_official" not in service.brief_info_by_wxid
     assert result.observed_contacts == 2
     assert result.observed_chatrooms == 1
+    assert result.chatroom_detail_status == "COMPLETE"
+    assert result.chatroom_detail_failures == []
     assert fake_session.flush_count == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_contacts_bounds_reported_chatroom_detail_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = "decrypted-directory-token"
+    cipher = _cipher()
+    connection = _connection(cipher, token)
+    account = _account(connection)
+    chatroom_ids = [f"room-{index}@chatroom" for index in range(205)]
+    brief_batches: list[list[str]] = []
+    observed_chatroom_ids: list[str] | None = None
+
+    class FakeGeWeClient:
+        def __init__(self, *, base_url: str, token: str) -> None:
+            assert base_url == connection.api_base_url
+            assert token == "decrypted-directory-token"
+
+        async def __aenter__(self) -> FakeGeWeClient:
+            return self
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: object | None,
+        ) -> None:
+            del exc_type, exc, traceback
+
+        async def fetch_contacts(self, request: AppIdRequest) -> ContactsData:
+            assert request.app_id == account.app_id
+            return ContactsData(friends=[], chatrooms=chatroom_ids, official_accounts=[])
+
+        async def get_brief_info(self, request: BriefInfoRequest) -> list[BriefInfoItem]:
+            assert request.app_id == account.app_id
+            brief_batches.append(request.wxids)
+            return []
+
+        async def get_chatroom_info(self, request: ChatroomInfoRequest) -> ChatroomInfoData:
+            raise GeWeClientError(
+                f"detail unavailable for {request.chatroom_id}",
+                retryable=False,
+            )
+
+    class Harness(DirectoryService):
+        async def _account_connection(
+            self,
+            session: AsyncSession,
+            bot_account_id: UUID,
+        ) -> tuple[BotAccount, GeweConnection]:
+            del session
+            assert bot_account_id == account.id
+            return account, connection
+
+        async def _upsert_contacts(
+            self,
+            session: AsyncSession,
+            *,
+            bot_account_id: UUID,
+            contact_types: dict[str, str],
+            brief_info_by_wxid: dict[str, BriefInfoItem],
+            synced_at: datetime,
+        ) -> None:
+            del session, bot_account_id, contact_types, brief_info_by_wxid, synced_at
+
+        async def _upsert_chatroom_placeholders(
+            self,
+            session: AsyncSession,
+            *,
+            bot_account_id: UUID,
+            chatroom_ids: list[str],
+            brief_info_by_wxid: dict[str, BriefInfoItem],
+            chatroom_details: dict[str, ChatroomInfoData],
+            synced_at: datetime,
+        ) -> None:
+            nonlocal observed_chatroom_ids
+            del session, bot_account_id, brief_info_by_wxid, chatroom_details, synced_at
+            observed_chatroom_ids = chatroom_ids
+
+    monkeypatch.setattr(directory_service_module, "GeWeClient", FakeGeWeClient)
+    service = Harness(cipher=cipher)
+    result = await service.sync_contacts(
+        cast(AsyncSession, FakeSession()),
+        account.id,
+    )
+
+    assert result.observed_chatrooms == 205
+    assert result.chatroom_detail_status == "PARTIAL"
+    assert result.chatroom_detail_failure_count == 205
+    assert result.chatroom_detail_failures_truncated is True
+    assert len(result.chatroom_detail_failures) == 200
+    assert result.chatroom_detail_failures == chatroom_ids[:200]
+    assert observed_chatroom_ids == chatroom_ids
+    assert len(brief_batches) == 11
+    assert all(1 <= len(batch) <= 20 for batch in brief_batches)
 
 
 @pytest.mark.asyncio
@@ -277,6 +431,9 @@ async def test_contact_and_chatroom_upserts_update_existing_and_add_new() -> Non
         bot_account_id=account_id,
         external_id="wxid_existing",
         contact_type=CONTACT_TYPE_FRIEND,
+        nickname="Old name",
+        remark="Old remark",
+        avatar_url="https://example.test/old.jpg",
         active=False,
     )
     contact_session = FakeSession(scalar_rows=[existing_contact])
@@ -285,23 +442,54 @@ async def test_contact_and_chatroom_upserts_update_existing_and_add_new() -> Non
         cast(AsyncSession, contact_session),
         bot_account_id=account_id,
         contact_types={
-            "wxid_existing": CONTACT_TYPE_OFFICIAL_ACCOUNT,
+            "wxid_existing": CONTACT_TYPE_FRIEND,
             "wxid_new": CONTACT_TYPE_FRIEND,
+            "gh_official": CONTACT_TYPE_OFFICIAL_ACCOUNT,
+        },
+        brief_info_by_wxid={
+            "wxid_existing": BriefInfoItem.model_validate(
+                {
+                    "userName": "wxid_existing",
+                    "nickName": "Updated name",
+                    "remark": "Updated remark",
+                    "bigHeadImgUrl": "https://example.test/existing-big.jpg",
+                }
+            ),
+            "wxid_new": BriefInfoItem.model_validate(
+                {
+                    "userName": "wxid_new",
+                    "nickName": "New name",
+                    "remark": "New remark",
+                    "bigHeadImgUrl": "https://example.test/new-big.jpg",
+                    "smallHeadImgUrl": "https://example.test/new-small.jpg",
+                }
+            ),
         },
         synced_at=synced_at,
     )
 
-    assert existing_contact.contact_type == CONTACT_TYPE_OFFICIAL_ACCOUNT
+    assert existing_contact.contact_type == CONTACT_TYPE_FRIEND
+    assert existing_contact.nickname == "Updated name"
+    assert existing_contact.remark == "Updated remark"
+    assert existing_contact.avatar_url == "https://example.test/existing-big.jpg"
     assert existing_contact.active is True
     assert existing_contact.last_synced_at == synced_at
-    new_contact = cast(Contact, contact_session.added[0])
+    added_contacts = {
+        cast(Contact, contact).external_id: cast(Contact, contact)
+        for contact in contact_session.added
+    }
+    new_contact = added_contacts["wxid_new"]
     assert new_contact.external_id == "wxid_new"
+    assert new_contact.nickname == "New name"
+    assert new_contact.avatar_url == "https://example.test/new-small.jpg"
     assert new_contact.last_synced_at == synced_at
+    assert added_contacts["gh_official"].nickname is None
 
     existing_chatroom = Chatroom(
         id=uuid4(),
         bot_account_id=account_id,
         chatroom_id="existing@chatroom",
+        name="Old group name",
         discovered_from="WEBHOOK",
         placeholder=False,
     )
@@ -310,14 +498,24 @@ async def test_contact_and_chatroom_upserts_update_existing_and_add_new() -> Non
         cast(AsyncSession, chatroom_session),
         bot_account_id=account_id,
         chatroom_ids=["existing@chatroom", "new@chatroom"],
+        brief_info_by_wxid={
+            "existing@chatroom": BriefInfoItem.model_validate(
+                {"userName": "existing@chatroom", "nickName": "123"}
+            ),
+            "new@chatroom": BriefInfoItem.model_validate(
+                {"userName": "new@chatroom", "nickName": "New group"}
+            ),
+        },
         synced_at=synced_at,
     )
 
     assert existing_chatroom.discovered_from == "WEBHOOK"
     assert existing_chatroom.placeholder is False
+    assert existing_chatroom.name == "123"
     assert existing_chatroom.last_synced_at == synced_at
     new_chatroom = cast(Chatroom, chatroom_session.added[0])
     assert new_chatroom.chatroom_id == "new@chatroom"
+    assert new_chatroom.name == "New group"
     assert new_chatroom.discovered_from == DISCOVERED_FROM_CONTACT_LIST
     assert new_chatroom.placeholder is True
 
@@ -395,3 +593,5 @@ async def test_membership_upsert_reuses_active_epoch_and_reopens_with_next_epoch
     reopened = cast(ChatroomMembership, session.added[0])
     assert reopened.member_wxid == "wxid_rejoined"
     assert reopened.membership_epoch == 3
+    assert "FOR UPDATE" in str(session.scalar_statements[0].compile(dialect=postgresql.dialect()))
+    assert "FOR UPDATE" in str(session.scalars_statements[0].compile(dialect=postgresql.dialect()))

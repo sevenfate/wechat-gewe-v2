@@ -498,11 +498,27 @@ class EventDispatcher:
         actor_cardname: str | None = None
         if event.conversation_type is ConversationType.GROUP and event.conversation_id:
             chatroom = await session.scalar(
-                select(Chatroom).where(
+                select(Chatroom)
+                .where(
                     Chatroom.bot_account_id == account.id,
                     Chatroom.chatroom_id == event.conversation_id,
                 )
+                .with_for_update()
             )
+            if chatroom is None:
+                # A missing-row SELECT cannot lock the unique key. Serialize the
+                # first discovery for this account, then re-check before inserting.
+                await session.scalar(
+                    select(BotAccount.id).where(BotAccount.id == account.id).with_for_update()
+                )
+                chatroom = await session.scalar(
+                    select(Chatroom)
+                    .where(
+                        Chatroom.bot_account_id == account.id,
+                        Chatroom.chatroom_id == event.conversation_id,
+                    )
+                    .with_for_update()
+                )
             if chatroom is None:
                 chatroom = Chatroom(
                     bot_account_id=account.id,
@@ -568,12 +584,21 @@ class EventDispatcher:
         chatroom_id: UUID,
         actor_wxid: str,
     ) -> ChatroomMembership:
+        # Lock the parent row so concurrent events/snapshots for this group
+        # serialize the active-membership and next-epoch decision.
+        chatroom_exists = await session.scalar(
+            select(Chatroom.id).where(Chatroom.id == chatroom_id).with_for_update()
+        )
+        if chatroom_exists is None:
+            raise EventDispatchError("chatroom not found while ensuring membership")
         active = await session.scalar(
-            select(ChatroomMembership).where(
+            select(ChatroomMembership)
+            .where(
                 ChatroomMembership.chatroom_id == chatroom_id,
                 ChatroomMembership.member_wxid == actor_wxid,
                 ChatroomMembership.left_at.is_(None),
             )
+            .with_for_update()
         )
         if active is not None:
             return active

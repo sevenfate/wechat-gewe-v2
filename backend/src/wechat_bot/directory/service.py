@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -9,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from wechat_bot.auth.service import AuthPrincipal
 from wechat_bot.core.crypto import CredentialCipher, CredentialDecryptionError
+from wechat_bot.core.logging import get_logger
 from wechat_bot.db.base import utc_now
 from wechat_bot.db.models import (
     AuditEvent,
@@ -19,6 +22,7 @@ from wechat_bot.db.models import (
     GeweConnection,
 )
 from wechat_bot.directory.schemas import (
+    MAX_REPORTED_CHATROOM_DETAIL_FAILURES,
     ChatroomList,
     ChatroomView,
     ContactList,
@@ -28,12 +32,19 @@ from wechat_bot.directory.schemas import (
     MembershipSyncResult,
     MembershipView,
 )
-from wechat_bot.gewe.client import GeWeClient
-from wechat_bot.gewe.schemas import AppIdRequest, ChatroomMember, ChatroomMemberListRequest
+from wechat_bot.gewe.client import GeWeClient, GeWeClientError
+from wechat_bot.gewe.schemas import (
+    BriefInfoItem,
+    ChatroomInfoData,
+    ChatroomMember,
+    ChatroomMemberListRequest,
+)
+from wechat_bot.gewe.service import GeWeService
 
 CONTACT_TYPE_FRIEND = "FRIEND"
 CONTACT_TYPE_OFFICIAL_ACCOUNT = "OFFICIAL_ACCOUNT"
 DISCOVERED_FROM_CONTACT_LIST = "CONTACT_LIST"
+logger = get_logger(component="directory_service")
 
 
 class DirectoryNotFoundError(LookupError):
@@ -53,6 +64,9 @@ class DirectoryMembershipConflictError(RuntimeError):
 @dataclass(slots=True)
 class DirectoryService:
     cipher: CredentialCipher
+    contacts_cache_poll_attempts: int = 6
+    contacts_cache_poll_interval_seconds: float = 10.0
+    contacts_cache_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 
     async def sync_contacts(
         self,
@@ -62,10 +76,43 @@ class DirectoryService:
         account, connection = await self._account_connection(session, bot_account_id)
         token = self._decrypt_token(connection)
         async with GeWeClient(base_url=connection.api_base_url, token=token) as client:
-            directory = await client.fetch_contacts(AppIdRequest(app_id=account.app_id))
+            gewe = GeWeService(client)
+            directory = await gewe.fetch_contacts(
+                app_id=account.app_id,
+                cache_poll_attempts=self.contacts_cache_poll_attempts,
+                cache_poll_interval_seconds=self.contacts_cache_poll_interval_seconds,
+                sleep=self.contacts_cache_sleep,
+            )
+            friend_ids = list(dict.fromkeys(directory.friends))
+            chatroom_ids = list(dict.fromkeys(directory.chatrooms))
+            brief_info = await gewe.get_brief_info_batched(
+                app_id=account.app_id,
+                wxids=[*friend_ids, *chatroom_ids],
+            )
+            chatroom_details: dict[str, ChatroomInfoData] = {}
+            chatroom_detail_failures: list[str] = []
+            chatroom_detail_failure_count = 0
+            for chatroom_id in chatroom_ids:
+                try:
+                    chatroom_details[chatroom_id] = await gewe.get_chatroom_info(
+                        app_id=account.app_id,
+                        chatroom_id=chatroom_id,
+                    )
+                except GeWeClientError as exc:
+                    # A detail endpoint failure must not discard the usable ID/summary data.
+                    chatroom_detail_failure_count += 1
+                    if len(chatroom_detail_failures) < MAX_REPORTED_CHATROOM_DETAIL_FAILURES:
+                        chatroom_detail_failures.append(chatroom_id)
+                    logger.warning(
+                        "directory_chatroom_detail_failed",
+                        bot_account_id=str(bot_account_id),
+                        chatroom_id=chatroom_id,
+                        error_type=type(exc).__name__,
+                    )
 
         synced_at = utc_now()
-        contact_types = dict.fromkeys(directory.friends, CONTACT_TYPE_FRIEND)
+        brief_info_by_wxid = {item.wxid: item for item in brief_info}
+        contact_types = dict.fromkeys(friend_ids, CONTACT_TYPE_FRIEND)
         contact_types.update(
             dict.fromkeys(directory.official_accounts, CONTACT_TYPE_OFFICIAL_ACCOUNT)
         )
@@ -73,13 +120,15 @@ class DirectoryService:
             session,
             bot_account_id=account.id,
             contact_types=contact_types,
+            brief_info_by_wxid=brief_info_by_wxid,
             synced_at=synced_at,
         )
-        chatroom_ids = list(dict.fromkeys(directory.chatrooms))
         await self._upsert_chatroom_placeholders(
             session,
             bot_account_id=account.id,
             chatroom_ids=chatroom_ids,
+            brief_info_by_wxid=brief_info_by_wxid,
+            chatroom_details=chatroom_details,
             synced_at=synced_at,
         )
         await session.flush()
@@ -87,6 +136,12 @@ class DirectoryService:
             bot_account_id=account.id,
             observed_contacts=len(contact_types),
             observed_chatrooms=len(chatroom_ids),
+            chatroom_detail_status=("PARTIAL" if chatroom_detail_failure_count else "COMPLETE"),
+            chatroom_detail_failure_count=chatroom_detail_failure_count,
+            chatroom_detail_failures=chatroom_detail_failures,
+            chatroom_detail_failures_truncated=(
+                len(chatroom_detail_failures) < chatroom_detail_failure_count
+            ),
             synced_at=synced_at,
         )
 
@@ -294,10 +349,12 @@ class DirectoryService:
         *,
         bot_account_id: UUID,
         contact_types: dict[str, str],
+        brief_info_by_wxid: Mapping[str, BriefInfoItem] | None = None,
         synced_at: datetime,
     ) -> None:
         if not contact_types:
             return
+        brief_info = brief_info_by_wxid or {}
         existing = {
             contact.external_id: contact
             for contact in await session.scalars(
@@ -318,6 +375,11 @@ class DirectoryService:
                 session.add(contact)
             else:
                 contact.contact_type = contact_type
+            brief = brief_info.get(external_id)
+            if brief is not None:
+                contact.nickname = brief.nickname
+                contact.remark = brief.remark
+                contact.avatar_url = brief.small_head_image_url or brief.big_head_image_url
             contact.active = True
             contact.last_synced_at = synced_at
 
@@ -327,10 +389,21 @@ class DirectoryService:
         *,
         bot_account_id: UUID,
         chatroom_ids: list[str],
+        brief_info_by_wxid: Mapping[str, BriefInfoItem] | None = None,
         synced_at: datetime,
+        chatroom_details: Mapping[str, ChatroomInfoData] | None = None,
     ) -> None:
         if not chatroom_ids:
             return
+        brief_info = brief_info_by_wxid or {}
+        details = chatroom_details or {}
+        # Coordinate with webhook discovery, which uses the same account row
+        # before creating a missing chatroom.
+        account_exists = await session.scalar(
+            select(BotAccount.id).where(BotAccount.id == bot_account_id).with_for_update()
+        )
+        if account_exists is None:
+            raise DirectoryNotFoundError("bot account")
         existing = {
             chatroom.chatroom_id: chatroom
             for chatroom in await session.scalars(
@@ -350,6 +423,17 @@ class DirectoryService:
                     placeholder=True,
                 )
                 session.add(chatroom)
+            brief = brief_info.get(chatroom_id)
+            if brief is not None:
+                chatroom.name = brief.nickname
+            detail = details.get(chatroom_id)
+            if detail is not None:
+                chatroom.name = detail.nickname or chatroom.name
+                chatroom.owner_wxid = detail.owner_wxid
+                member_list = detail.member_list
+                if member_list is not None:
+                    chatroom.member_count = len(member_list)
+                chatroom.placeholder = False
             chatroom.last_synced_at = synced_at
 
     async def _upsert_memberships(
@@ -359,11 +443,19 @@ class DirectoryService:
         chatroom: Chatroom,
         members_by_wxid: dict[str, ChatroomMember],
     ) -> int:
+        # The parent lock also covers the no-membership-yet case: a row lock on
+        # an empty membership query cannot serialize concurrent epoch creation.
+        chatroom_exists = await session.scalar(
+            select(Chatroom.id).where(Chatroom.id == chatroom.id).with_for_update()
+        )
+        if chatroom_exists is None:
+            raise DirectoryNotFoundError("chatroom")
         memberships = list(
             await session.scalars(
                 select(ChatroomMembership)
                 .where(ChatroomMembership.chatroom_id == chatroom.id)
                 .order_by(ChatroomMembership.membership_epoch.desc())
+                .with_for_update()
             )
         )
         active_by_wxid: dict[str, ChatroomMembership] = {}

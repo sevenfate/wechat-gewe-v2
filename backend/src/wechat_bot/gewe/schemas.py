@@ -59,6 +59,14 @@ class AppIdRequest(GeWeModel):
     app_id: ExternalId = Field(validation_alias="appId", serialization_alias="appId")
 
 
+class BriefInfoRequest(AppIdRequest):
+    wxids: Annotated[list[ExternalId], Field(min_length=1, max_length=20)]
+
+
+class ChatroomInfoRequest(AppIdRequest):
+    chatroom_id: ExternalId = Field(validation_alias="chatroomId", serialization_alias="chatroomId")
+
+
 class SetCallbackRequest(GeWeModel):
     token: str
     callback_url: str = Field(validation_alias="callbackUrl", serialization_alias="callbackUrl")
@@ -110,6 +118,14 @@ class ContactsData(GeWeModel):
     friends: list[ExternalId]
     chatrooms: list[ExternalId]
     official_accounts: list[ExternalId] = Field(alias="ghs")
+
+
+class BriefInfoItem(GeWeModel):
+    wxid: ExternalId = Field(alias="userName")
+    nickname: str | None = Field(default=None, alias="nickName")
+    remark: str | None = None
+    big_head_image_url: str | None = Field(default=None, alias="bigHeadImgUrl")
+    small_head_image_url: str | None = Field(default=None, alias="smallHeadImgUrl")
 
 
 class ChatroomMember(GeWeModel):
@@ -166,6 +182,26 @@ class ReconnectionResponse(GeWeResponse[LoginStatusData]):
 
 
 class ContactsResponse(GeWeResponse[ContactsData]):
+    pass
+
+
+class ContactsCacheResponse(GeWeResponse[ContactsData]):
+    pass
+
+
+class BriefInfoResponse(GeWeResponse[list[BriefInfoItem]]):
+    pass
+
+
+class ChatroomInfoData(GeWeModel):
+    chatroom_id: ExternalId = Field(alias="chatroomId")
+    nickname: str | None = Field(default=None, alias="nickName")
+    owner_wxid: ExternalId | None = Field(default=None, alias="chatRoomOwner")
+    small_head_image_url: str | None = Field(default=None, alias="smallHeadImgUrl")
+    member_list: list[object] | None = Field(default=None, alias="memberList")
+
+
+class ChatroomInfoResponse(GeWeResponse[ChatroomInfoData]):
     pass
 
 

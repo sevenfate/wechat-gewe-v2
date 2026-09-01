@@ -2,18 +2,26 @@ from __future__ import annotations
 
 import re
 from typing import TypeVar
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from pydantic import ValidationError
 
 from wechat_bot.gewe.schemas import (
     AppIdRequest,
+    BriefInfoItem,
+    BriefInfoRequest,
+    BriefInfoResponse,
+    ChatroomInfoData,
+    ChatroomInfoRequest,
+    ChatroomInfoResponse,
     ChatroomMemberListData,
     ChatroomMemberListRequest,
     ChatroomMemberListResponse,
     CheckLoginRequest,
     CheckLoginResponse,
     CheckOnlineResponse,
+    ContactsCacheResponse,
     ContactsData,
     ContactsResponse,
     GetLoginQrCodeRequest,
@@ -79,7 +87,7 @@ class GeWeClient:
     ) -> None:
         if not token:
             raise ValueError("GeWe token cannot be empty")
-        self._base_url = base_url.rstrip("/")
+        self._base_url = self._normalize_base_url(base_url)
         self._token = token
         self._http_client = http_client or httpx.AsyncClient(timeout=timeout_seconds)
         self._owns_http_client = http_client is None
@@ -126,6 +134,30 @@ class GeWeClient:
     async def fetch_contacts(self, request: AppIdRequest) -> ContactsData:
         response = await self._post(
             "/gewe/v2/api/contacts/fetchContactsList", request, ContactsResponse
+        )
+        return self._require_data(response)
+
+    async def fetch_contacts_cache(self, request: AppIdRequest) -> ContactsData | None:
+        response = await self._post(
+            "/gewe/v2/api/contacts/fetchContactsListCache",
+            request,
+            ContactsCacheResponse,
+        )
+        return response.data
+
+    async def get_brief_info(self, request: BriefInfoRequest) -> list[BriefInfoItem]:
+        response = await self._post(
+            "/gewe/v2/api/contacts/getBriefInfo",
+            request,
+            BriefInfoResponse,
+        )
+        return self._require_data(response)
+
+    async def get_chatroom_info(self, request: ChatroomInfoRequest) -> ChatroomInfoData:
+        response = await self._post(
+            "/gewe/v2/api/group/getChatroomInfo",
+            request,
+            ChatroomInfoResponse,
         )
         return self._require_data(response)
 
@@ -198,3 +230,16 @@ class GeWeClient:
     def _redact(self, message: str) -> str:
         redacted = message.replace(self._token, "[REDACTED]")
         return _TOKEN_PATTERN.sub(r"\1[REDACTED]", redacted)[:500]
+
+    @staticmethod
+    def _normalize_base_url(base_url: str) -> str:
+        """Accept either the provider host or its documented API path as the base."""
+        normalized = base_url.rstrip("/")
+        parsed = urlsplit(normalized)
+        path = parsed.path.rstrip("/")
+        api_prefix = "/gewe/v2/api"
+        if path.lower().endswith(api_prefix):
+            path = path[: -len(api_prefix)].rstrip("/")
+        return urlunsplit(
+            (parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment)
+        ).rstrip("/")

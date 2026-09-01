@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     webhook_max_body_bytes: int = 1_048_576
     webhook_ack_deadline_seconds: float = 2.5
 
+    directory_contacts_cache_poll_attempts: int = 6
+    directory_contacts_cache_poll_interval_seconds: float = 10.0
+
     sender_poll_interval_seconds: float = 0.25
     sender_max_concurrent_accounts: int = 8
     sender_per_minute_limit: int = 40
@@ -92,6 +95,22 @@ class Settings(BaseSettings):
             raise ValueError(
                 "webhook ACK deadline must be greater than zero and remain below "
                 "GeWe's 3 second limit"
+            )
+        return value
+
+    @field_validator("directory_contacts_cache_poll_attempts")
+    @classmethod
+    def validate_directory_contacts_cache_poll_attempts(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("directory contact cache poll attempts cannot be negative")
+        return value
+
+    @field_validator("directory_contacts_cache_poll_interval_seconds")
+    @classmethod
+    def validate_directory_contacts_cache_poll_interval(cls, value: float) -> float:
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(
+                "directory contact cache poll interval must be finite and greater than zero"
             )
         return value
 

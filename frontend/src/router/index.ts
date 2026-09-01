@@ -70,6 +70,12 @@ const routes = [
     meta: { title: "消息与 Trace", requiresAuth: true },
   },
   {
+    path: "/tool-calls",
+    name: "tool-calls",
+    component: () => import("@/views/ToolCallsView.vue"),
+    meta: { title: "Tool 调用审计", requiresAuth: true },
+  },
+  {
     path: "/task-agents",
     name: "task-agents",
     component: () => import("@/views/TaskAgentView.vue"),

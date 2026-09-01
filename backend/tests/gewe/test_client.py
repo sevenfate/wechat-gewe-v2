@@ -5,6 +5,7 @@ import json
 import httpx
 import pytest
 import respx
+from pydantic import ValidationError
 
 from wechat_bot.gewe.client import (
     GeWeAPIError,
@@ -15,6 +16,8 @@ from wechat_bot.gewe.client import (
 )
 from wechat_bot.gewe.schemas import (
     AppIdRequest,
+    BriefInfoRequest,
+    ChatroomInfoRequest,
     ChatroomMemberListRequest,
     CheckLoginRequest,
     DeviceType,
@@ -200,6 +203,105 @@ async def test_directory_group_and_text_endpoint_contracts_keep_ids_as_strings()
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_brief_info_contract_maps_fields_and_limits_batches_to_twenty() -> None:
+    route = respx.post(f"{BASE_URL}/gewe/v2/api/contacts/getBriefInfo").mock(
+        return_value=_success(
+            [
+                {
+                    "userName": 9007199254740993,
+                    "nickName": "联系人",
+                    "remark": "备注",
+                    "bigHeadImgUrl": "https://example.test/big.jpg",
+                    "smallHeadImgUrl": "https://example.test/small.jpg",
+                }
+            ]
+        )
+    )
+
+    async with GeWeClient(base_url=BASE_URL, token=TOKEN) as client:
+        items = await client.get_brief_info(
+            BriefInfoRequest(app_id="wx_app_1", wxids=[9007199254740993])
+        )
+
+    assert items[0].wxid == "9007199254740993"
+    assert items[0].nickname == "联系人"
+    assert items[0].remark == "备注"
+    assert items[0].small_head_image_url == "https://example.test/small.jpg"
+    assert json.loads(route.calls.last.request.content) == {
+        "appId": "wx_app_1",
+        "wxids": ["9007199254740993"],
+    }
+
+    with pytest.raises(ValidationError):
+        BriefInfoRequest(app_id="wx_app_1", wxids=[f"wxid_{index}" for index in range(21)])
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chatroom_info_contract_maps_name_owner_and_member_list() -> None:
+    route = respx.post(f"{BASE_URL}/gewe/v2/api/group/getChatroomInfo").mock(
+        return_value=_success(
+            {
+                "chatroomId": "123456789@chatroom",
+                "nickName": "123",
+                "chatRoomOwner": 9007199254740993,
+                "smallHeadImgUrl": "https://example.test/group.jpg",
+                "memberList": [{"wxid": "wxid_a"}, {"wxid": "wxid_b"}],
+            }
+        )
+    )
+
+    async with GeWeClient(base_url=BASE_URL, token=TOKEN) as client:
+        info = await client.get_chatroom_info(
+            ChatroomInfoRequest(
+                app_id="wx_app_1",
+                chatroom_id="123456789@chatroom",
+            )
+        )
+
+    assert info.chatroom_id == "123456789@chatroom"
+    assert info.nickname == "123"
+    assert info.owner_wxid == "9007199254740993"
+    assert info.member_list is not None and len(info.member_list) == 2
+    assert json.loads(route.calls.last.request.content) == {
+        "appId": "wx_app_1",
+        "chatroomId": "123456789@chatroom",
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_contacts_cache_contract_allows_pending_then_returns_directory() -> None:
+    responses = iter(
+        [
+            _success(),
+            _success(
+                {
+                    "friends": ["wxid_friend"],
+                    "chatrooms": ["123456789@chatroom"],
+                    "ghs": ["gh_official"],
+                }
+            ),
+        ]
+    )
+    route = respx.post(f"{BASE_URL}/gewe/v2/api/contacts/fetchContactsListCache").mock(
+        side_effect=lambda _request: next(responses)
+    )
+
+    async with GeWeClient(base_url=BASE_URL, token=TOKEN) as client:
+        request = AppIdRequest(app_id="wx_app_1")
+        pending = await client.fetch_contacts_cache(request)
+        contacts = await client.fetch_contacts_cache(request)
+
+    assert pending is None
+    assert contacts is not None
+    assert contacts.friends == ["wxid_friend"]
+    assert route.call_count == 2
+    assert json.loads(route.calls.last.request.content) == {"appId": "wx_app_1"}
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_http_200_business_error_is_typed_retryable_and_redacted() -> None:
     respx.post(f"{BASE_URL}/gewe/v2/api/login/setCallback").mock(
         return_value=httpx.Response(
@@ -236,6 +338,20 @@ async def test_http_errors_are_classified_without_leaking_response_body() -> Non
     assert error_info.value.status_code == 401
     assert error_info.value.retryable is False
     assert TOKEN not in str(error_info.value)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_client_accepts_base_url_with_documented_api_suffix() -> None:
+    route = respx.post(f"{BASE_URL}/gewe/v2/api/login/checkOnline").mock(
+        return_value=httpx.Response(200, json={"ret": 200, "msg": "ok", "data": True})
+    )
+
+    async with GeWeClient(base_url=f"{BASE_URL}/gewe/v2/api/", token=TOKEN) as client:
+        online = await client.check_online(AppIdRequest(app_id="wx_app_1"))
+
+    assert online is True
+    assert route.call_count == 1
 
 
 @pytest.mark.asyncio

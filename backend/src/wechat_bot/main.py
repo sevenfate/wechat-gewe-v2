@@ -20,6 +20,7 @@ from wechat_bot.maibot.service import MaiBotBridgeService
 from wechat_bot.outbox.sender import SenderOptions, SenderWorker
 from wechat_bot.plugins.catalog import PluginCatalogService
 from wechat_bot.plugins.supervisor import PluginSupervisor
+from wechat_bot.tool_bridge.service import ToolBrokerService
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -37,6 +38,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             service=maibot_bridge_service,
         )
         plugin_supervisor = PluginSupervisor(managed_runtime=maibot_runtime)
+        tool_broker = ToolBrokerService(cipher, plugin_supervisor)
+        maibot_runtime.set_tool_broker(tool_broker)
         sender_worker = SenderWorker(
             session_factory=database.session_factory,
             cipher=cipher,
@@ -53,6 +56,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.settings = resolved_settings
         app.state.database = database
         app.state.plugin_supervisor = plugin_supervisor
+        app.state.tool_broker = tool_broker
         app.state.maibot_bridge_service = maibot_bridge_service
         app.state.maibot_runtime = maibot_runtime
         app.state.sender_worker = sender_worker

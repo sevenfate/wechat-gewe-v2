@@ -32,6 +32,10 @@ class MaiBotConnectorConfig(BaseModel):
     reconnect_initial_seconds: Annotated[float, Field(gt=0, le=60)] = 1.0
     reconnect_max_seconds: Annotated[float, Field(gt=0, le=300)] = 30.0
     enable_proactive_messages: bool = False
+    tool_allowlist: list[Annotated[str, Field(min_length=1, max_length=160)]] = Field(
+        default_factory=list,
+        max_length=100,
+    )
 
     @field_validator("websocket_url")
     @classmethod
@@ -52,6 +56,14 @@ class MaiBotConnectorConfig(BaseModel):
         if not value.get_secret_value().strip():
             raise ValueError("MaiBot API key cannot be blank")
         return value
+
+    @field_validator("tool_allowlist")
+    @classmethod
+    def normalize_tool_allowlist(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values]
+        if any(not value for value in normalized):
+            raise ValueError("MaiBot Tool allowlist cannot contain blank names")
+        return list(dict.fromkeys(normalized))
 
     @field_validator(
         "ack_retry_seconds",

@@ -67,7 +67,7 @@
 | M1 工程与安全底座 | FastAPI、Vue 3、Alembic、认证、CSRF、RBAC、加密凭据和管理后台已实现 |
 | M2 微信核心 | Connection、账号、Webhook、目录、消息 Trace、Outbox/Sender 已形成本地契约链路；真实 GeWe 待验收 |
 | M3 插件与 ACL | 内置插件、独立 Runner、Deployment/Revision、热启停/回滚、群/成员 ACL 已实现 |
-| MaiBot Connector | WebSocket、ACK、重连、TTL、幂等、fencing、回复及主动消息权限已实现；真实 MaiBot 和 Tool Bridge 待完成 |
+| MaiBot Connector | WebSocket、ACK、重连、TTL、幂等、fencing、回复及主动消息权限已实现；受限 Tool Bridge 已接入本地 Runtime，真实 MaiBot 联调待完成 |
 | Task Agent | Definition/Version/Session/Run/Inbox/Event/Question、管理 API、独立 RBAC、管理员身份/代答审计和后台工作台已实现；模型 Worker、Tool Broker、通用审批、预算和外部入口待完成 |
 | 交付级别 | 当前属于本地开发版本；没有真实第三方和生产 PostgreSQL 证据时不得标记为生产可用 |
 

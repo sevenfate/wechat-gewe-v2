@@ -14,6 +14,7 @@ from wechat_bot.auth.dependencies import (
 )
 from wechat_bot.core.config import Settings
 from wechat_bot.core.crypto import CredentialCipher
+from wechat_bot.core.logging import get_logger
 from wechat_bot.directory.schemas import (
     ChatroomList,
     ContactList,
@@ -39,6 +40,7 @@ router = APIRouter(
         Depends(require_permission("directory.read")),
     ],
 )
+logger = get_logger(component="directory_api")
 
 
 @router.get("/bot-accounts/{bot_account_id}/contacts", response_model=ContactList)
@@ -117,6 +119,13 @@ async def sync_directory(
     except DirectoryCredentialError as exc:
         raise _credential_unavailable() from exc
     except GeWeClientError as exc:
+        await session.rollback()
+        logger.warning(
+            "directory_sync_upstream_failed",
+            bot_account_id=str(bot_account_id),
+            error_type=type(exc).__name__,
+            retryable=exc.retryable,
+        )
         raise _upstream_error(exc.retryable) from exc
     await session.commit()
     return result
@@ -179,7 +188,13 @@ async def mark_chatroom_membership_left(
 
 def _service(request: Request) -> DirectoryService:
     settings: Settings = request.app.state.settings
-    return DirectoryService(cipher=CredentialCipher.from_settings(settings))
+    return DirectoryService(
+        cipher=CredentialCipher.from_settings(settings),
+        contacts_cache_poll_attempts=settings.directory_contacts_cache_poll_attempts,
+        contacts_cache_poll_interval_seconds=(
+            settings.directory_contacts_cache_poll_interval_seconds
+        ),
+    )
 
 
 def _not_found(resource: str) -> HTTPException:

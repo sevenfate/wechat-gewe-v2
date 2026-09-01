@@ -44,9 +44,28 @@ class PluginTool(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: Annotated[str, Field(min_length=1, max_length=120)]
+    schema_version: Annotated[str, Field(min_length=1, max_length=40)] = "1.0"
     description: Annotated[str, Field(max_length=500)] = ""
     effect_class: Literal["READ_ONLY", "WRITE", "SEND", "GROUP_ADMIN", "UNKNOWN"]
     input_schema: dict[str, object] = Field(default_factory=dict)
+    output_schema: dict[str, object] = Field(default_factory=dict)
+    required_capabilities: list[str] = Field(default_factory=list)
+
+    @field_validator("required_capabilities")
+    @classmethod
+    def normalize_required_capabilities(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values]
+        if any(not value for value in normalized):
+            raise ValueError("tool capability names cannot be blank")
+        return list(dict.fromkeys(normalized))
+
+    @field_validator("schema_version")
+    @classmethod
+    def normalize_schema_version(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("tool schema version cannot be blank")
+        return normalized
 
 
 class PluginManifest(BaseModel):
