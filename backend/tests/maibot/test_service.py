@@ -857,6 +857,92 @@ async def test_proactive_message_is_rejected_after_connector_acl_revocation(
     assert outbox_count == 0
 
 
+async def test_proactive_message_accepts_platform_route_without_connector_context(
+    app: FastAPI,
+    client: object,
+) -> None:
+    del client
+    database = app.state.database
+    cipher = CredentialCipher.from_settings(app.state.settings)
+    service = MaiBotBridgeService(cipher)
+    async with database.session_factory() as session:
+        seed = await _seed(
+            session,
+            cipher=cipher,
+            allow_connector=True,
+            enable_proactive=True,
+        )
+        await _dispatch_source(session, service=service, seed=seed)
+        context = await service.activation_context(
+            session,
+            deployment_id=seed.deployment_id,
+            activation_epoch=1,
+        )
+        assert context is not None
+        chatroom = await session.scalar(
+            select(Chatroom).where(Chatroom.chatroom_id == seed.group_external_id)
+        )
+        assert chatroom is not None
+        connector = await PolicyService().create_principal(
+            session,
+            PrincipalCreate(
+                workspace_id=seed.workspace_id,
+                principal_type=PrincipalType.CONNECTOR,
+                external_id=f"maibot:{seed.deployment_id}",
+                display_name="MaiBot Connector",
+            ),
+        )
+        await PolicyService().create_rule(
+            session,
+            AclRuleCreate(
+                workspace_id=seed.workspace_id,
+                principal_id=connector.id,
+                scope_type=AclScopeType.CHATROOM,
+                scope_id=str(chatroom.id),
+                resource_type=AclResourceType.CAPABILITY,
+                resource_id=MAIBOT_PROACTIVE_CAPABILITY,
+                effect=AclEffect.ALLOW,
+                reason="allow routed proactive message in this test group",
+            ),
+            created_by="test",
+        )
+        outbound = _outbound(
+            envelope_id="maibot-proactive-platform-route",
+            target_wxid=seed.group_external_id,
+            reply_to=None,
+            text="平台路由主动消息",
+            include_bot_user=True,
+        )
+        additional_config = outbound["payload"]["message_info"]["additional_config"]
+        assert isinstance(additional_config, dict)
+        del additional_config["wechat_bot_connector_context_id"]
+        additional_config.update(
+            {
+                "platform_io_account_id": "app-maibot",
+                "platform_io_scope": str(seed.deployment_id),
+                "platform_io_target_group_id": seed.group_external_id,
+            }
+        )
+
+        received = await service.receive_standard(
+            session,
+            context=context,
+            config=_config(enable_proactive=True),
+            envelope=outbound,
+        )
+        outbox = await session.scalar(
+            select(OutboxMessage).where(
+                OutboxMessage.idempotency_key.endswith(":proactive:maibot-proactive-platform-route")
+            )
+        )
+
+    assert received.status is MaiBotBridgeStatus.ACCEPTED
+    assert received.source_envelope_id is None
+    assert outbox is not None
+    assert outbox.target_wxid == seed.group_external_id
+    assert outbox.authorization_context["resource_id"] == MAIBOT_PROACTIVE_CAPABILITY
+
+
 async def test_proactive_message_requires_dedicated_revision_grant(
     app: FastAPI,
     client: object,

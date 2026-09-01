@@ -93,6 +93,13 @@ class _ResolvedConversationContext:
     authorization: OutboxAuthorizationContext
 
 
+@dataclass(frozen=True, slots=True)
+class _ResolvedProactiveTarget:
+    account: BotAccount
+    chatroom: Chatroom | None
+    contact: Contact | None
+
+
 class MaiBotBridgeError(RuntimeError):
     pass
 
@@ -496,7 +503,7 @@ class MaiBotBridgeService:
             return row
 
         connector_context_id = _connector_context_id(envelope)
-        if connector_context_id is None:
+        if connector_context_id is None and intent.reply_to_business_message_id is not None:
             self._reject(row, "MAIBOT_CONTEXT_REQUIRED")
             await session.flush()
             return row
@@ -506,6 +513,7 @@ class MaiBotBridgeService:
         row.target_wxid = intent.target_wxid
         if intent.reply_to_business_message_id is not None:
             row.kind = MaiBotBridgeKind.REPLY
+            assert connector_context_id is not None
             await self._accept_reply(
                 session,
                 context=context,
@@ -522,6 +530,7 @@ class MaiBotBridgeService:
                 row=row,
                 intent=intent,
                 connector_context_id=connector_context_id,
+                envelope=envelope,
             )
         await session.flush()
         return row
@@ -830,7 +839,8 @@ class MaiBotBridgeService:
         config: MaiBotConnectorConfig,
         row: MaiBotBridgeEnvelope,
         intent: MaiBotOutboundText,
-        connector_context_id: str,
+        connector_context_id: str | None,
+        envelope: Mapping[str, Any],
     ) -> None:
         if not config.enable_proactive_messages:
             self._reject(row, "MAIBOT_PROACTIVE_DISABLED")
@@ -841,28 +851,46 @@ class MaiBotBridgeService:
         ):
             self._reject(row, "MAIBOT_PROACTIVE_GRANT_MISSING")
             return
-        resolved = await self._resolve_conversation_context(
-            session,
-            context=context,
-            row=row,
-            connector_context_id=connector_context_id,
-        )
-        if resolved is None:
-            return
-        source = resolved.source
-        if source.chatroom_id is not None and source.contact_id is None:
-            source_target_kind = "GROUP"
-        elif source.contact_id is not None and source.chatroom_id is None:
-            source_target_kind = "PRIVATE"
+        source: MaiBotBridgeEnvelope | None = None
+        target_wxid = intent.target_wxid
+        if connector_context_id is not None:
+            resolved = await self._resolve_conversation_context(
+                session,
+                context=context,
+                row=row,
+                connector_context_id=connector_context_id,
+            )
+            if resolved is None:
+                return
+            source = resolved.source
+            if source.chatroom_id is not None and source.contact_id is None:
+                source_target_kind = "GROUP"
+            elif source.contact_id is not None and source.chatroom_id is None:
+                source_target_kind = "PRIVATE"
+            else:
+                self._reject(row, "MAIBOT_SOURCE_CONTEXT_INVALID")
+                return
+            if source.target_wxid != intent.target_wxid or source_target_kind != intent.target_kind:
+                self._reject(row, "MAIBOT_PROACTIVE_TARGET_MISMATCH")
+                return
+            target_wxid = source.target_wxid
+            assert target_wxid is not None
+            account = resolved.account
+            chatroom = resolved.chatroom
+            contact = resolved.contact
         else:
-            self._reject(row, "MAIBOT_SOURCE_CONTEXT_INVALID")
-            return
-        if source.target_wxid != intent.target_wxid or source_target_kind != intent.target_kind:
-            self._reject(row, "MAIBOT_PROACTIVE_TARGET_MISMATCH")
-            return
-        account = resolved.account
-        chatroom = resolved.chatroom
-        contact = resolved.contact
+            resolved_target = await self._resolve_platform_proactive_target(
+                session,
+                context=context,
+                row=row,
+                intent=intent,
+                envelope=envelope,
+            )
+            if resolved_target is None:
+                return
+            account = resolved_target.account
+            chatroom = resolved_target.chatroom
+            contact = resolved_target.contact
         principal = await self._policy.create_principal(
             session,
             PrincipalCreate(
@@ -908,26 +936,87 @@ class MaiBotBridgeService:
                 bot_account_id=account.id,
                 trace_id=row.trace_id,
                 idempotency_key=(f"maibot:{context.deployment_id}:proactive:{intent.envelope_id}"),
-                target_wxid=source.target_wxid,
+                target_wxid=target_wxid,
                 text=intent.text,
-                expires_at=_as_utc(source.expires_at),
+                expires_at=_as_utc(source.expires_at if source is not None else row.expires_at),
                 action_type=TEXT_ACTION_TYPE,
                 authorization_context=authorization,
             )
         except (OutboxIdempotencyConflictError, ValueError):
             self._reject(row, "MAIBOT_PROACTIVE_OUTBOX_REJECTED")
             return
-        row.source_envelope_id = source.id
+        if source is not None:
+            row.source_envelope_id = source.id
         row.bot_account_id = account.id
         row.actor_principal_id = principal.id
         row.chatroom_id = authorization.chatroom_id
         row.contact_id = authorization.contact_id
-        row.target_wxid = source.target_wxid
+        row.target_wxid = target_wxid
         row.authorization_context = authorization.model_dump(mode="json")
-        row.expires_at = source.expires_at
+        if source is not None:
+            row.expires_at = source.expires_at
         row.status = MaiBotBridgeStatus.ACCEPTED
         row.completed_at = utc_now()
         row.last_error_code = None
+
+    async def _resolve_platform_proactive_target(
+        self,
+        session: AsyncSession,
+        *,
+        context: MaiBotActivationContext,
+        row: MaiBotBridgeEnvelope,
+        intent: MaiBotOutboundText,
+        envelope: Mapping[str, Any],
+    ) -> _ResolvedProactiveTarget | None:
+        additional_config = _additional_config(envelope)
+        if additional_config is None:
+            self._reject(row, "MAIBOT_CONTEXT_REQUIRED")
+            return None
+
+        scope = _route_value(additional_config, "platform_io_scope")
+        account_app_id = _route_value(additional_config, "platform_io_account_id")
+        target_group_id = _route_value(additional_config, "platform_io_target_group_id")
+        if scope is None or account_app_id is None or target_group_id is None:
+            self._reject(row, "MAIBOT_PLATFORM_ROUTE_INVALID")
+            return None
+        if scope != str(context.deployment_id):
+            self._reject(row, "MAIBOT_CONTEXT_SCOPE_MISMATCH")
+            return None
+        if intent.target_kind != "GROUP" or target_group_id != intent.target_wxid:
+            self._reject(row, "MAIBOT_PROACTIVE_TARGET_MISMATCH")
+            return None
+
+        account = await session.scalar(
+            select(BotAccount)
+            .join(GeweConnection, GeweConnection.id == BotAccount.gewe_connection_id)
+            .where(
+                GeweConnection.workspace_id == context.workspace_id,
+                BotAccount.app_id == account_app_id,
+            )
+        )
+        if account is None:
+            self._reject(row, "MAIBOT_PLATFORM_ACCOUNT_NOT_FOUND")
+            return None
+        chatroom = await session.scalar(
+            select(Chatroom).where(
+                Chatroom.bot_account_id == account.id,
+                Chatroom.chatroom_id == target_group_id,
+            )
+        )
+        if chatroom is None:
+            self._reject(row, "MAIBOT_PROACTIVE_TARGET_NOT_FOUND")
+            return None
+        if not _scope_allows(
+            context.revision_scope,
+            workspace_id=context.workspace_id,
+            account_id=account.id,
+            chatroom_id=chatroom.id,
+            contact_id=None,
+            conversation_id=target_group_id,
+        ):
+            self._reject(row, "MAIBOT_CONTEXT_SCOPE_MISMATCH")
+            return None
+        return _ResolvedProactiveTarget(account=account, chatroom=chatroom, contact=None)
 
     async def _authorization_allowed(
         self,
@@ -1037,7 +1126,7 @@ def _scope_allows(
     return True
 
 
-def _connector_context_id(envelope: Mapping[str, Any]) -> str | None:
+def _additional_config(envelope: Mapping[str, Any]) -> Mapping[str, Any] | None:
     payload = envelope.get("payload")
     if not isinstance(payload, Mapping):
         return None
@@ -1045,7 +1134,20 @@ def _connector_context_id(envelope: Mapping[str, Any]) -> str | None:
     if not isinstance(message_info, Mapping):
         return None
     additional_config = message_info.get("additional_config")
-    if not isinstance(additional_config, Mapping):
+    return additional_config if isinstance(additional_config, Mapping) else None
+
+
+def _route_value(additional_config: Mapping[str, Any], key: str) -> str | None:
+    raw_value = additional_config.get(key)
+    if not isinstance(raw_value, str):
+        return None
+    normalized = raw_value.strip()
+    return normalized or None
+
+
+def _connector_context_id(envelope: Mapping[str, Any]) -> str | None:
+    additional_config = _additional_config(envelope)
+    if additional_config is None:
         return None
     raw_context = additional_config.get("wechat_bot_connector_context_id")
     if not isinstance(raw_context, str):
