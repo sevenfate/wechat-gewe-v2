@@ -46,6 +46,9 @@ packages = ["src/wechat_bot"]
 addopts = "-ra --strict-config --strict-markers --basetemp=.pytest-tmp"
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+  "postgres: requires an explicit disposable PostgreSQL test database",
+]
 
 [tool.coverage.run]
 branch = true

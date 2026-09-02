@@ -23,7 +23,43 @@ jobs:
         working-directory: backend
       - run: uv run ruff check .
         working-directory: backend
+      - run: uv run ruff format --check .
+        working-directory: backend
       - run: uv run mypy
         working-directory: backend
       - run: uv run pytest --cov --cov-report=term-missing
+        working-directory: backend
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      WECHAT_BOT_TEST_POSTGRES_URL: postgresql+psycopg://wechat_bot_test:postgres-test@127.0.0.1:5432/wechat_bot_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Provision non-superuser test database
+        run: |
+          docker exec "${{ job.services.postgres.id }}" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE wechat_bot_test LOGIN PASSWORD 'postgres-test' NOSUPERUSER NOCREATEDB NOCREATEROLE"
+          docker exec "${{ job.services.postgres.id }}" createdb -U postgres -O wechat_bot_test wechat_bot_test
+      - run: uv sync --all-groups --locked
+        working-directory: backend
+      - run: uv run pytest tests/postgres
         working-directory: backend
