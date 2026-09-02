@@ -131,7 +131,7 @@ async def test_builtin_plugin_deployment_hot_upgrade_and_stop(
     assert "package_path" not in catalog.text
 
 
-async def test_revision_draft_clones_source_and_preserves_secret(
+async def test_revision_draft_clones_source_configuration(
     app: FastAPI,
     admin_client: AsyncClient,
     settings: Settings,
@@ -146,31 +146,20 @@ async def test_revision_draft_clones_source_and_preserves_secret(
     )
     workspace_id = connection.json()["workspace_id"]
     installed = await admin_client.post(
-        "/api/v1/plugins/builtins/builtin.maibot-connector/install",
+        "/api/v1/plugins/builtins/builtin.echo/install",
         json={"workspace_id": workspace_id},
     )
     package_id = installed.json()["package"]["id"]
-    api_key = "maibot-secret-that-must-not-leak"
-    config = {
-        "websocket_url": "wss://maibot.test/ws",
-        "api_key": api_key,
-        "client_uuid": "stable-client",
-        "message_ttl_seconds": 300,
-        "max_pending_messages": 500,
-        "ack_retry_seconds": 5,
-        "reconnect_initial_seconds": 1,
-        "reconnect_max_seconds": 20,
-        "enable_proactive_messages": True,
-    }
+    config = {"prefix": "v1:"}
     scope = {"workspace_id": workspace_id, "chatroom_ids": ["group-a"]}
-    grants = ["message.forward.external.maibot", "message.reply.text"]
+    grants = ["message.reply.text"]
     created = await admin_client.post(
         "/api/v1/plugins/deployments",
         json={
             "workspace_id": workspace_id,
             "plugin_id": installed.json()["plugin"]["id"],
             "package_version_id": package_id,
-            "name": "MaiBot safe revisions",
+            "name": "Echo revision drafts",
             "config": config,
             "scope": scope,
             "grants": grants,
@@ -187,12 +176,11 @@ async def test_revision_draft_clones_source_and_preserves_secret(
     assert draft.json() == {
         "source_revision_id": source_revision_id,
         "package_version_id": package_id,
-        "config": {**config, "api_key": PLUGIN_REDACTION_MARKER},
+        "config": config,
         "scope": scope,
         "grants": grants,
         "secret_placeholder": PLUGIN_REDACTION_MARKER,
     }
-    assert api_key not in draft.text
 
     cloned = await admin_client.post(
         f"/api/v1/plugins/deployments/{deployment_id}/revisions",
@@ -208,10 +196,7 @@ async def test_revision_draft_clones_source_and_preserves_secret(
         json={
             "source_revision_id": source_revision_id,
             "package_version_id": package_id,
-            "config": {
-                "websocket_url": "wss://maibot.test/v2",
-                "api_key": PLUGIN_REDACTION_MARKER,
-            },
+            "config": {"prefix": "v2:"},
             "scope": scope,
             "grants": grants,
         },
@@ -231,21 +216,20 @@ async def test_revision_draft_clones_source_and_preserves_secret(
     assert cloned_revision is not None
     assert edited_revision is not None
     assert json.loads(cipher.decrypt(cloned_revision.config_ciphertext)) == config
-    assert json.loads(cipher.decrypt(edited_revision.config_ciphertext)) == {
-        **config,
-        "websocket_url": "wss://maibot.test/v2",
-    }
+    assert json.loads(cipher.decrypt(edited_revision.config_ciphertext)) == {"prefix": "v2:"}
     assert PLUGIN_REDACTION_MARKER not in cipher.decrypt(edited_revision.config_ciphertext)
 
     catalog = await admin_client.get("/api/v1/plugins")
     assert catalog.status_code == 200
-    assert api_key not in catalog.text
 
     async with app.state.database.session_factory() as session:
         package = await session.get(PluginPackageVersion, UUID(package_id))
         assert package is not None
         manifest = json.loads(json.dumps(package.manifest))
-        manifest["config_schema"]["properties"]["api_key"]["enum"] = ["allowed-value"]
+        manifest["config_schema"] = {
+            "type": "object",
+            "properties": {"prefix": {"type": "string", "enum": ["allowed-value"]}},
+        }
         package.manifest = manifest
         await session.commit()
     invalid = await admin_client.post(
@@ -253,7 +237,6 @@ async def test_revision_draft_clones_source_and_preserves_secret(
         json={"source_revision_id": source_revision_id},
     )
     assert invalid.status_code == 409
-    assert api_key not in invalid.text
 
 
 def test_nested_sensitive_config_is_redacted_and_restored() -> None:

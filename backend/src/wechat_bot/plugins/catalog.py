@@ -28,7 +28,6 @@ from wechat_bot.db.plugin_models import (
     PluginPackageVersion,
     PluginRevisionActivation,
 )
-from wechat_bot.maibot.constants import MAIBOT_CONNECTOR_PLUGIN_ID
 from wechat_bot.plugins.manifest import PluginManifest, load_plugin_manifest
 from wechat_bot.plugins.schemas import PluginDeploymentCreate, PluginRevisionCreate
 from wechat_bot.plugins.supervisor import (
@@ -48,7 +47,6 @@ _BUILTIN_ROOT = (
 BUILTIN_PACKAGES = {
     "builtin.echo": _BUILTIN_ROOT / "echo",
     "builtin.weather": _BUILTIN_ROOT / "weather",
-    MAIBOT_CONNECTOR_PLUGIN_ID: _BUILTIN_ROOT / "maibot_connector",
 }
 SCOPE_FILTER_KEYS = (
     "bot_account_ids",
@@ -356,8 +354,6 @@ class PluginCatalogService:
                 str(deployment_id),
                 spec,
                 requested_epoch=next_epoch,
-                activation_id=str(activation.id),
-                fencing_token=activation.fencing_token,
             )
         except (PluginRuntimeError, ValueError) as exc:
             activation.status = PluginActivationStatus.FAILED

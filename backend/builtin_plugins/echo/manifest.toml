@@ -15,6 +15,6 @@ description = "原样返回命令后的文字"
 
 [[tools]]
 name = "plugin.echo.text"
-description = "返回输入文字，用于诊断 Tool Bridge"
+description = "返回输入文字，用于诊断插件调用"
 effect_class = "READ_ONLY"
 input_schema = { type = "object" }

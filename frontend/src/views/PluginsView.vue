@@ -26,7 +26,6 @@ type DialogMode = "deploy" | "revision" | "activate";
 const builtinPlugins = [
   { id: "builtin.echo", name: "Echo" },
   { id: "builtin.weather", name: "天气" },
-  { id: "builtin.maibot-connector", name: "MaiBot Connector" },
 ] as const;
 type BuiltinPluginId = (typeof builtinPlugins)[number]["id"];
 
@@ -126,19 +125,6 @@ function defaultPluginConfig(pluginId: string): Record<string, unknown> {
       geocoding_base_url: "https://geocoding-api.open-meteo.com/v1/search",
       forecast_base_url: "https://api.open-meteo.com/v1/forecast",
       timeout_seconds: 5,
-    };
-  }
-  if (pluginId === "builtin.maibot-connector") {
-    return {
-      websocket_url: "wss://maibot.example.invalid/ws",
-      api_key: "REPLACE_WITH_MAIBOT_API_KEY",
-      client_uuid: "REPLACE_WITH_STABLE_CLIENT_UUID",
-      message_ttl_seconds: 300,
-      max_pending_messages: 1000,
-      ack_retry_seconds: 10,
-      reconnect_initial_seconds: 1,
-      reconnect_max_seconds: 30,
-      enable_proactive_messages: false,
     };
   }
   return {};

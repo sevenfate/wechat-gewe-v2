@@ -5,7 +5,6 @@ from typing import Literal
 OWNER_ROLE_CODE = "owner"
 ADMIN_USER_MANAGE_PERMISSION = "admin.user.manage"
 OUTBOX_READ_PERMISSION = "outbox.read"
-TOOL_READ_PERMISSION = "tool.read"
 OUTBOX_MANAGE_PERMISSION = "outbox.manage"
 AGENT_READ_PERMISSION = "agent.read"
 AGENT_WRITE_PERMISSION = "agent.write"
@@ -35,7 +34,6 @@ SYSTEM_PERMISSION_CATALOG: dict[str, str] = {
     "audit.read": "Read policy decisions, audit events, and end-to-end traces",
     OUTBOX_MANAGE_PERMISSION: "Cancel and reconcile outgoing messages",
     OUTBOX_READ_PERMISSION: "Read outgoing message delivery state",
-    TOOL_READ_PERMISSION: "Read the Tool Bridge catalog and call ledger",
     "plugin.deploy": "Install, upgrade, enable, disable, and remove plugins",
     "plugin.invoke": "Invoke plugin commands and tools",
     "plugin.read": "Read plugin catalog and runtime state",

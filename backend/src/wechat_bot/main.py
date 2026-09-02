@@ -15,12 +15,9 @@ from wechat_bot.db.session import Database
 from wechat_bot.events.dispatcher import EventDispatcher
 from wechat_bot.events.outbox_sink import OutboxTextActionSink
 from wechat_bot.events.worker import EventDispatcherWorker
-from wechat_bot.maibot.runtime import MaiBotManagedRuntime
-from wechat_bot.maibot.service import MaiBotBridgeService
 from wechat_bot.outbox.sender import SenderOptions, SenderWorker
 from wechat_bot.plugins.catalog import PluginCatalogService
 from wechat_bot.plugins.supervisor import PluginSupervisor
-from wechat_bot.tool_bridge.service import ToolBrokerService
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -32,14 +29,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         database = Database(resolved_settings)
         cipher = CredentialCipher.from_settings(resolved_settings)
-        maibot_bridge_service = MaiBotBridgeService(cipher)
-        maibot_runtime = MaiBotManagedRuntime(
-            session_factory=database.session_factory,
-            service=maibot_bridge_service,
-        )
-        plugin_supervisor = PluginSupervisor(managed_runtime=maibot_runtime)
-        tool_broker = ToolBrokerService(cipher, plugin_supervisor)
-        maibot_runtime.set_tool_broker(tool_broker)
+        plugin_supervisor = PluginSupervisor()
         sender_worker = SenderWorker(
             session_factory=database.session_factory,
             cipher=cipher,
@@ -50,15 +40,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             dispatcher=EventDispatcher(
                 invoker=plugin_supervisor,
                 action_sink=OutboxTextActionSink(),
-                maibot_sink=maibot_bridge_service,
             ),
         )
         app.state.settings = resolved_settings
         app.state.database = database
         app.state.plugin_supervisor = plugin_supervisor
-        app.state.tool_broker = tool_broker
-        app.state.maibot_bridge_service = maibot_bridge_service
-        app.state.maibot_runtime = maibot_runtime
         app.state.sender_worker = sender_worker
         app.state.event_dispatcher_worker = event_dispatcher_worker
         workers_started = False

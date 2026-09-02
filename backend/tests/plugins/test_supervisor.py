@@ -15,37 +15,6 @@ from wechat_bot.plugins.supervisor import (
 )
 
 ECHO_PACKAGE = Path(__file__).parents[2] / "builtin_plugins" / "echo"
-MAIBOT_PACKAGE = Path(__file__).parents[2] / "builtin_plugins" / "maibot_connector"
-
-
-class RecordingManagedRuntime:
-    def __init__(self) -> None:
-        self.activated: list[tuple[str, int | None]] = []
-        self.deactivated: list[str] = []
-        self.shutdown_called = False
-
-    @staticmethod
-    def handles(spec: PluginLaunchSpec) -> bool:
-        return spec.manifest.plugin_id == "builtin.maibot-connector"
-
-    async def activate(
-        self,
-        deployment_id: str,
-        spec: PluginLaunchSpec,
-        *,
-        requested_epoch: int | None = None,
-        activation_id: str | None = None,
-        fencing_token: str | None = None,
-    ) -> int:
-        del spec, activation_id, fencing_token
-        self.activated.append((deployment_id, requested_epoch))
-        return requested_epoch or 1
-
-    async def deactivate(self, deployment_id: str) -> None:
-        self.deactivated.append(deployment_id)
-
-    async def shutdown(self) -> None:
-        self.shutdown_called = True
 
 
 def test_manifest_is_valid_and_hash_is_stable() -> None:
@@ -56,12 +25,6 @@ def test_manifest_is_valid_and_hash_is_stable() -> None:
     assert manifest.tools[0].effect_class == "READ_ONLY"
     assert first_hash == second_hash
     assert len(first_hash) == 64
-
-
-def test_maibot_manifest_declares_dedicated_proactive_capability() -> None:
-    manifest, _ = load_plugin_manifest(MAIBOT_PACKAGE)
-
-    assert "message.send.proactive.maibot" in manifest.capabilities
 
 
 def test_plugin_subprocess_environment_drops_core_secrets() -> None:
@@ -249,37 +212,6 @@ async def test_timed_out_process_is_invalidated_before_next_call(
             )
     finally:
         await process.stop(force=True)
-
-
-async def test_managed_connector_bypasses_process_rpc_and_deactivates_cleanly() -> None:
-    runtime = RecordingManagedRuntime()
-    supervisor = PluginSupervisor(managed_runtime=runtime)
-    spec = PluginLaunchSpec.from_package(
-        MAIBOT_PACKAGE,
-        config={
-            "websocket_url": "ws://maibot.test:8090/ws",
-            "api_key": "test-api-key",
-            "client_uuid": "test-connector",
-        },
-    )
-    try:
-        epoch = await supervisor.activate(
-            "maibot-deployment",
-            spec,
-            requested_epoch=7,
-        )
-
-        assert epoch == 7
-        assert runtime.activated == [("maibot-deployment", 7)]
-        with pytest.raises(PluginRuntimeError, match="synchronous plugin invocation"):
-            await supervisor.call("maibot-deployment", "handle_event")
-
-        await supervisor.deactivate("maibot-deployment")
-        assert runtime.deactivated == ["maibot-deployment"]
-    finally:
-        await supervisor.shutdown()
-
-    assert runtime.shutdown_called
 
 
 def _write_slow_plugin(tmp_path: Path) -> Path:

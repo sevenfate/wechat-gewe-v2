@@ -1,1 +1,0 @@
-"""MaiBot bridge tests."""

@@ -31,8 +31,6 @@ from wechat_bot.db.plugin_models import (
     PluginPackageVersion,
 )
 from wechat_bot.db.policy_models import AclResourceType, Principal, PrincipalType
-from wechat_bot.maibot.constants import MAIBOT_CONNECTOR_PLUGIN_ID
-from wechat_bot.maibot.schemas import MaiBotEventSubmission
 from wechat_bot.outbox.schemas import OutboxAuthorizationContext
 from wechat_bot.plugins.manifest import PluginCommand, PluginManifest
 from wechat_bot.policy.schemas import AclEvaluationRequest, PrincipalCreate
@@ -94,14 +92,6 @@ class TextActionSink(Protocol):
     ) -> None: ...
 
 
-class MaiBotEventSink(Protocol):
-    async def enqueue_event(
-        self,
-        session: AsyncSession,
-        submission: MaiBotEventSubmission,
-    ) -> object | None: ...
-
-
 @dataclass(frozen=True, slots=True)
 class DispatchResult:
     event_id: UUID
@@ -147,12 +137,10 @@ class EventDispatcher:
         invoker: PluginInvoker,
         action_sink: TextActionSink,
         policy_service: PolicyService | None = None,
-        maibot_sink: MaiBotEventSink | None = None,
     ) -> None:
         self._invoker = invoker
         self._action_sink = action_sink
         self._policy = policy_service or PolicyService()
-        self._maibot_sink = maibot_sink
 
     async def dispatch(
         self,
@@ -274,68 +262,6 @@ class EventDispatcher:
             dispatch_record.last_attempt_at = utc_now()
             dispatch_record.completed_at = None
             dispatch_record.last_error_type = None
-            if route.manifest.plugin_id == MAIBOT_CONNECTOR_PLUGIN_ID:
-                invoked += 1
-                if event.actor_wxid is None:
-                    rejected_actions += 1
-                    dispatch_record.status = PluginEventDispatchStatus.REJECTED
-                    dispatch_record.completed_at = utc_now()
-                    await self._audit(
-                        session,
-                        context=context,
-                        event=event,
-                        action="plugin.event.dispatch",
-                        object_id=str(route.deployment.id),
-                        result="REJECTED",
-                        detail={
-                            "plugin_id": route.manifest.plugin_id,
-                            "reason": "MaiBot bridge requires a resolved sender identity",
-                        },
-                    )
-                    continue
-                queued = None
-                if self._maibot_sink is not None:
-                    queued = await self._maibot_sink.enqueue_event(
-                        session,
-                        _maibot_submission(
-                            event=event,
-                            inbox=inbox,
-                            context=context,
-                            route=route,
-                            authorization_context=_authorization_context(
-                                context=context,
-                                route=route,
-                                command=command,
-                            ),
-                        ),
-                    )
-                if queued is None:
-                    rejected_actions += 1
-                    dispatch_record.status = PluginEventDispatchStatus.REJECTED
-                else:
-                    accepted_actions += 1
-                    dispatch_record.status = PluginEventDispatchStatus.SUCCEEDED
-                dispatch_record.accepted_action_count = int(queued is not None)
-                dispatch_record.completed_at = utc_now()
-                await self._audit(
-                    session,
-                    context=context,
-                    event=event,
-                    action="plugin.event.dispatch",
-                    object_id=str(route.deployment.id),
-                    result="QUEUED" if queued is not None else "REJECTED",
-                    detail={
-                        "plugin_id": route.manifest.plugin_id,
-                        "accepted_actions": int(queued is not None),
-                        "reason": (
-                            None
-                            if queued is not None
-                            else "MaiBot bridge is unavailable or at capacity"
-                        ),
-                    },
-                )
-                continue
-
             try:
                 _, result = await self._invoker.call(
                     str(route.deployment.id),
@@ -884,39 +810,4 @@ def _authorization_context(
         resource_type=resource_type,
         resource_id=resource_id,
         parent_plugin_id=parent_plugin_id,
-    )
-
-
-def _maibot_submission(
-    *,
-    event: NormalizedEvent,
-    inbox: WebhookInbox,
-    context: _ResolvedContext,
-    route: _PluginRoute,
-    authorization_context: OutboxAuthorizationContext,
-) -> MaiBotEventSubmission:
-    if event.conversation_id is None or event.actor_wxid is None:
-        raise EventDispatchError("MaiBot text event has no conversation actor")
-    provider_id = event.provider_message_id or str(event.id)
-    occurred_at = event.occurred_at or event.created_at
-    return MaiBotEventSubmission(
-        workspace_id=context.workspace_id,
-        deployment_id=route.deployment.id,
-        deployment_revision_id=route.revision.id,
-        bot_account_id=context.account.id,
-        bot_app_id=context.account.app_id,
-        bot_wxid=context.account.wxid,
-        trace_id=inbox.trace_id,
-        event_id=event.id,
-        event_type=event.event_type,
-        conversation_type=event.conversation_type,
-        conversation_external_id=event.conversation_id,
-        actor_wxid=event.actor_wxid,
-        actor_nickname=context.actor_nickname,
-        actor_cardname=context.actor_cardname,
-        group_name=context.chatroom.name if context.chatroom is not None else None,
-        business_message_id=f"gewe:{context.account.app_id}:{provider_id}",
-        occurred_at=occurred_at,
-        text=context.message_text,
-        authorization_context=authorization_context,
     )

@@ -8,7 +8,7 @@ from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 from uuid import uuid4
 
 from wechat_bot.plugins.manifest import PluginManifest, load_plugin_manifest
@@ -77,24 +77,6 @@ class PluginLaunchSpec:
             package_sha256=package_sha256,
             config=config or {},
         )
-
-
-class ManagedPluginRuntime(Protocol):
-    def handles(self, spec: PluginLaunchSpec) -> bool: ...
-
-    async def activate(
-        self,
-        deployment_id: str,
-        spec: PluginLaunchSpec,
-        *,
-        requested_epoch: int | None = None,
-        activation_id: str | None = None,
-        fencing_token: str | None = None,
-    ) -> int: ...
-
-    async def deactivate(self, deployment_id: str) -> None: ...
-
-    async def shutdown(self) -> None: ...
 
 
 class PluginProcess:
@@ -276,25 +258,19 @@ class PluginActivationPreparation:
     deployment_id: str
     activation_epoch: int
     spec: PluginLaunchSpec
-    activation_id: str | None
-    fencing_token: str | None
-    managed: bool
     candidate: PluginProcess | None = None
 
 
 @dataclass(slots=True)
 class PluginDeactivationPreparation:
     deployment_id: str
-    managed: bool
     active: _ActivePlugin | None
 
 
 class PluginSupervisor:
-    def __init__(self, *, managed_runtime: ManagedPluginRuntime | None = None) -> None:
+    def __init__(self) -> None:
         self._active: dict[str, _ActivePlugin] = {}
         self._last_epoch: dict[str, int] = {}
-        self._managed_runtime = managed_runtime
-        self._managed_deployments: set[str] = set()
         self._pending_activations: dict[str, PluginActivationPreparation] = {}
         self._pending_deactivations: dict[str, PluginDeactivationPreparation] = {}
         self._lock = asyncio.Lock()
@@ -305,11 +281,7 @@ class PluginSupervisor:
         spec: PluginLaunchSpec,
         *,
         requested_epoch: int | None = None,
-        activation_id: str | None = None,
-        fencing_token: str | None = None,
     ) -> PluginActivationPreparation:
-        managed_runtime = self._managed_runtime
-        managed = managed_runtime is not None and managed_runtime.handles(spec)
         async with self._lock:
             self._reject_pending_transition(deployment_id)
             last_epoch = self._last_epoch.get(deployment_id, 0)
@@ -320,14 +292,8 @@ class PluginSupervisor:
                 deployment_id=deployment_id,
                 activation_epoch=epoch,
                 spec=spec,
-                activation_id=activation_id,
-                fencing_token=fencing_token,
-                managed=managed,
             )
             self._pending_activations[deployment_id] = preparation
-
-        if managed:
-            return preparation
 
         candidate = PluginProcess(spec)
         preparation.candidate = candidate
@@ -351,41 +317,6 @@ class PluginSupervisor:
         preparation: PluginActivationPreparation,
     ) -> int:
         deployment_id = preparation.deployment_id
-        if preparation.managed:
-            managed_runtime = self._managed_runtime
-            if managed_runtime is None:
-                await self.abort_activation(preparation)
-                raise PluginRuntimeError("managed plugin runtime is unavailable")
-            async with self._lock:
-                self._require_pending_activation(preparation)
-            try:
-                actual_epoch = await managed_runtime.activate(
-                    deployment_id,
-                    preparation.spec,
-                    requested_epoch=preparation.activation_epoch,
-                    activation_id=preparation.activation_id,
-                    fencing_token=preparation.fencing_token,
-                )
-            except BaseException:
-                await self.abort_activation(preparation)
-                raise
-            if actual_epoch != preparation.activation_epoch:
-                await managed_runtime.deactivate(deployment_id)
-                await self.abort_activation(preparation)
-                raise PluginRuntimeError("managed runtime changed the requested activation epoch")
-            async with self._lock:
-                if self._pending_activations.get(deployment_id) is not preparation:
-                    invalidated = True
-                else:
-                    invalidated = False
-                    self._pending_activations.pop(deployment_id)
-                    self._managed_deployments.add(deployment_id)
-                    self._last_epoch[deployment_id] = actual_epoch
-            if invalidated:
-                await managed_runtime.deactivate(deployment_id)
-                raise PluginRuntimeError("plugin activation preparation is no longer valid")
-            return actual_epoch
-
         candidate = preparation.candidate
         if candidate is None:
             await self.abort_activation(preparation)
@@ -424,15 +355,11 @@ class PluginSupervisor:
         spec: PluginLaunchSpec,
         *,
         requested_epoch: int | None = None,
-        activation_id: str | None = None,
-        fencing_token: str | None = None,
     ) -> int:
         preparation = await self.prepare_activation(
             deployment_id,
             spec,
             requested_epoch=requested_epoch,
-            activation_id=activation_id,
-            fencing_token=fencing_token,
         )
         try:
             return await self.commit_activation(preparation)
@@ -451,7 +378,6 @@ class PluginSupervisor:
                 active.accepting = False
             preparation = PluginDeactivationPreparation(
                 deployment_id=deployment_id,
-                managed=deployment_id in self._managed_deployments,
                 active=active,
             )
             self._pending_deactivations[deployment_id] = preparation
@@ -465,15 +391,9 @@ class PluginSupervisor:
         async with self._lock:
             self._require_pending_deactivation(preparation)
             self._pending_deactivations.pop(deployment_id)
-            if preparation.managed:
-                self._managed_deployments.discard(deployment_id)
             active = preparation.active
             if active is not None and self._active.get(deployment_id) is active:
                 self._active.pop(deployment_id)
-        if preparation.managed:
-            if self._managed_runtime is not None:
-                await self._managed_runtime.deactivate(deployment_id)
-            return
         if active is not None:
             await active.drained.wait()
             await active.process.stop()
@@ -504,12 +424,6 @@ class PluginSupervisor:
         method: str,
         params: dict[str, Any] | None = None,
     ) -> tuple[int, Any]:
-        async with self._lock:
-            is_managed = deployment_id in self._managed_deployments
-        if is_managed:
-            raise PluginRuntimeError(
-                "managed connector does not support synchronous plugin invocation"
-            )
         active = await self._acquire(deployment_id)
         try:
             result = await active.process.call(method, params)
@@ -530,11 +444,9 @@ class PluginSupervisor:
         for deactivation_preparation in pending_deactivations:
             await self.abort_deactivation(deactivation_preparation)
         async with self._lock:
-            deployment_ids = list(self._active.keys() | self._managed_deployments)
+            deployment_ids = list(self._active)
         for deployment_id in deployment_ids:
             await self.deactivate(deployment_id)
-        if self._managed_runtime is not None:
-            await self._managed_runtime.shutdown()
 
     def _reject_pending_transition(self, deployment_id: str) -> None:
         if (
